@@ -769,6 +769,35 @@ public class KeycardApplet extends Applet {
     JCSystem.beginTransaction();
     isExtended = true;
 
+    masterPrivate.setS(apduBuffer, (short) ISO7816.OFFSET_CDATA, CHAIN_CODE_SIZE);
+    privateKey.setS(apduBuffer, (short) ISO7816.OFFSET_CDATA, CHAIN_CODE_SIZE);
+
+    Util.arrayCopy(apduBuffer, (short) (ISO7816.OFFSET_CDATA + CHAIN_CODE_SIZE), masterChainCode, (short) 0, CHAIN_CODE_SIZE);
+    Util.arrayCopy(apduBuffer, (short) (ISO7816.OFFSET_CDATA + CHAIN_CODE_SIZE), chainCode, (short) 0, CHAIN_CODE_SIZE);
+    short pubLen = secp256k1.derivePublicKey(masterPrivate, apduBuffer, (short) 0);
+
+    masterPublic.setW(apduBuffer, (short) 0, pubLen);
+    publicKey.setW(apduBuffer, (short) 0, pubLen);
+
+    resetKeyStatus();
+    JCSystem.commitTransaction();
+  }
+
+    /**
+   * Exactly the same as loadSeed, but it saves the seed.
+   *
+   * @param apduBuffer the APDU buffer
+   */
+  private void loadAndSaveSeed(byte[] apduBuffer) {
+    if (apduBuffer[ISO7816.OFFSET_LC] != BIP39_SEED_SIZE) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
+    crypto.bip32MasterFromSeed(apduBuffer, (short) ISO7816.OFFSET_CDATA, BIP39_SEED_SIZE, apduBuffer, (short) ISO7816.OFFSET_CDATA);
+
+    JCSystem.beginTransaction();
+    isExtended = true;
+
     masterSeed.setKey(apduBuffer, (short) ISO7816.OFFSET_CDATA, BIP39_SEED_SIZE);
     masterPrivate.setS(apduBuffer, (short) ISO7816.OFFSET_CDATA, CHAIN_CODE_SIZE);
     privateKey.setS(apduBuffer, (short) ISO7816.OFFSET_CDATA, CHAIN_CODE_SIZE);
