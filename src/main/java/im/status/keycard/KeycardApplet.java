@@ -783,36 +783,6 @@ public class KeycardApplet extends Applet {
     JCSystem.commitTransaction();
   }
 
-    /**
-   * Exactly the same as loadSeed, but it saves the seed.
-   *
-   * @param apduBuffer the APDU buffer
-   */
-  private void loadAndSaveSeed(byte[] apduBuffer) {
-    if (apduBuffer[ISO7816.OFFSET_LC] != BIP39_SEED_SIZE) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
-
-    crypto.bip32MasterFromSeed(apduBuffer, (short) ISO7816.OFFSET_CDATA, BIP39_SEED_SIZE, apduBuffer, (short) ISO7816.OFFSET_CDATA);
-
-    JCSystem.beginTransaction();
-    isExtended = true;
-
-    masterSeed.setKey(apduBuffer, (short) ISO7816.OFFSET_CDATA, BIP39_SEED_SIZE);
-    masterPrivate.setS(apduBuffer, (short) ISO7816.OFFSET_CDATA, CHAIN_CODE_SIZE);
-    privateKey.setS(apduBuffer, (short) ISO7816.OFFSET_CDATA, CHAIN_CODE_SIZE);
-
-    Util.arrayCopy(apduBuffer, (short) (ISO7816.OFFSET_CDATA + CHAIN_CODE_SIZE), masterChainCode, (short) 0, CHAIN_CODE_SIZE);
-    Util.arrayCopy(apduBuffer, (short) (ISO7816.OFFSET_CDATA + CHAIN_CODE_SIZE), chainCode, (short) 0, CHAIN_CODE_SIZE);
-    short pubLen = secp256k1.derivePublicKey(masterPrivate, apduBuffer, (short) 0);
-
-    masterPublic.setW(apduBuffer, (short) 0, pubLen);
-    publicKey.setW(apduBuffer, (short) 0, pubLen);
-
-    resetKeyStatus();
-    JCSystem.commitTransaction();
-  }
-
   /**
    * Processes the DERIVE KEY command. Requires a secure channel to be already open. Unless a PIN-less path exists, t
    * the PIN must be verified as well. The master key must be already loaded and have a chain code. In the happy case
@@ -1110,6 +1080,9 @@ public class KeycardApplet extends Applet {
 
     apduBuffer[ISO7816.OFFSET_LC] = BIP39_SEED_SIZE;
     crypto.random.generateData(apduBuffer, ISO7816.OFFSET_CDATA, BIP39_SEED_SIZE);
+    
+    // Save the seed as a HMAC key (64 bytes)
+    masterSeed.setKey(apduBuffer, (short) ISO7816.OFFSET_CDATA, BIP39_SEED_SIZE);
 
     loadSeed(apduBuffer);
     pinlessPathLen = 0;

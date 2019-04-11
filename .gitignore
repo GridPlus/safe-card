@@ -1,8 +1,13 @@
 # IntelliJ IDEA project files
+.project
+.classpath
+.settings
 .idea
 *.iml
 
 # Gradle output
 /.gradle
 /build
+bin
+buildSrc
 /gradle.properties
