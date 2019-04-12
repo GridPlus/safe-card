@@ -17,6 +17,7 @@ public class KeycardApplet extends Applet {
   static final byte INS_CHANGE_PIN = (byte) 0x21;
   static final byte INS_UNBLOCK_PIN = (byte) 0x22;
   static final byte INS_LOAD_KEY = (byte) 0xD0;
+  static final byte INS_LOAD_SEED_WITH_FLAG = (byte) 0xDA;
   static final byte INS_DERIVE_KEY = (byte) 0xD1;
   static final byte INS_GENERATE_MNEMONIC = (byte) 0xD2;
   static final byte INS_REMOVE_KEY = (byte) 0xD3;
@@ -28,6 +29,7 @@ public class KeycardApplet extends Applet {
   static final byte INS_EXPORT_SEED = (byte) 0xC3;
   static final byte INS_GET_DATA = (byte) 0xCA;
   static final byte INS_STORE_DATA = (byte) 0xE2;
+
 
   static final short SW_REFERENCED_DATA_NOT_FOUND = (short) 0x6A88;
 
@@ -111,7 +113,14 @@ public class KeycardApplet extends Applet {
   private byte[] uid;
   private SecureChannel secureChannel;
 
+  static final byte NUM_STORAGE_SLOTS = 5;
+  private byte[] seedStore;
+  private short[] seedStoreFlags;
+  private ECPrivateKey[] privateKeyStore;
+  private ECPublicKey[] publicKeyStore;
+  
   private byte[] masterSeed;
+  private byte currentSeedIdx;
   private ECPublicKey masterPublic;
   private ECPrivateKey masterPrivate;
   private byte[] masterChainCode;
@@ -178,6 +187,16 @@ public class KeycardApplet extends Applet {
 
     uid = new byte[UID_LENGTH];
     crypto.random.generateData(uid, (short) 0, UID_LENGTH);
+
+    seedStore = new byte[NUM_STORAGE_SLOTS*BIP39_SEED_SIZE];
+    currentSeedIdx = 0;
+    seedStoreFlags = new short[NUM_STORAGE_SLOTS];
+    privateKeyStore = new ECPrivateKey[NUM_STORAGE_SLOTS];
+    publicKeyStore = new ECPublicKey[NUM_STORAGE_SLOTS];
+    for (short i=0; i < NUM_STORAGE_SLOTS; i++) {
+      privateKeyStore[i] = (ECPrivateKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PRIVATE, SECP256k1.SECP256K1_KEY_SIZE, false);
+      publicKeyStore[i] = (ECPublicKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PUBLIC, SECP256k1.SECP256K1_KEY_SIZE, false);
+    }
 
     masterSeed = new byte[BIP39_SEED_SIZE];
 
@@ -269,6 +288,9 @@ public class KeycardApplet extends Applet {
           break;
         case INS_LOAD_KEY:
           loadKey(apdu);
+          break;
+        case INS_LOAD_SEED_WITH_FLAG:
+          loadSeedWithFlag(apdu);
           break;
         case INS_DERIVE_KEY:
           deriveKey(apdu);
@@ -782,9 +804,6 @@ public class KeycardApplet extends Applet {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
-    // Save the seed before turning it into a master key
-    Util.arrayCopy(apduBuffer, (short) ISO7816.OFFSET_CDATA, masterSeed, (short) 0, BIP39_SEED_SIZE);
-
     crypto.bip32MasterFromSeed(apduBuffer, (short) ISO7816.OFFSET_CDATA, BIP39_SEED_SIZE, apduBuffer, (short) ISO7816.OFFSET_CDATA);
 
     JCSystem.beginTransaction();
@@ -803,6 +822,50 @@ public class KeycardApplet extends Applet {
     resetKeyStatus();
     JCSystem.commitTransaction();
   }
+
+  private void loadSeedWithFlag(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+    secureChannel.preprocessAPDU(apduBuffer);
+
+    if (!pin.isValidated()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+
+    // Storage slot in which to store the seed
+    short slotIdx = apduBuffer[ISO7816.OFFSET_P1];
+    // Flag specifying options/restrictions for the wallet derived from the seed
+    short flag = apduBuffer[ISO7816.OFFSET_P2];
+
+    if (slotIdx > NUM_STORAGE_SLOTS - 1 || flag == 0) {
+      // Avoid overflows || Avoid flag=0, which indicates an empty slot
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+
+    // Seeds are stored in a 1D byte array using offsets
+    // which are multiples of BIP39_SEED_SIZE
+    short off = 0;
+    byte chunk = (byte) BIP39_SEED_SIZE;
+    for (byte i = 0; i < slotIdx; i++) {
+      off += chunk;
+    }
+    
+    JCSystem.beginTransaction();
+    
+    // Store the seed at the correct offset
+    Util.arrayCopy(apduBuffer, (short) ISO7816.OFFSET_CDATA, seedStore, (short) off, BIP39_SEED_SIZE);
+    seedStoreFlags[slotIdx] = flag;
+    currentSeedIdx = (byte) slotIdx;
+
+    // Activate the seed
+    loadSeed(apduBuffer);
+
+    resetKeyStatus();
+    JCSystem.commitTransaction();
+    
+    pinlessPathLen = 0;
+    generateKeyUIDAndRespond(apdu, apduBuffer);
+  }
+
 
   /**
    * Processes the DERIVE KEY command. Requires a secure channel to be already open. Unless a PIN-less path exists, t
