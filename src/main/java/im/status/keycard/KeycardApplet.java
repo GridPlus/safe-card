@@ -17,11 +17,12 @@ public class KeycardApplet extends Applet {
   static final byte INS_CHANGE_PIN = (byte) 0x21;
   static final byte INS_UNBLOCK_PIN = (byte) 0x22;
   static final byte INS_LOAD_KEY = (byte) 0xD0;
-  static final byte INS_LOAD_SEED_WITH_FLAG = (byte) 0xDA;
   static final byte INS_DERIVE_KEY = (byte) 0xD1;
   static final byte INS_GENERATE_MNEMONIC = (byte) 0xD2;
   static final byte INS_REMOVE_KEY = (byte) 0xD3;
   static final byte INS_GENERATE_KEY = (byte) 0xD4;
+  static final byte INS_LOAD_SEED_WITH_FLAG = (byte) 0xDA;
+  static final byte INS_GENERATE_KEY_WITH_FLAG = (byte) 0xDB;
   static final byte INS_DUPLICATE_KEY = (byte) 0xD5;
   static final byte INS_SIGN = (byte) 0xC0;
   static final byte INS_SET_PINLESS_PATH = (byte) 0xC1;
@@ -29,7 +30,6 @@ public class KeycardApplet extends Applet {
   static final byte INS_EXPORT_SEED = (byte) 0xC3;
   static final byte INS_GET_DATA = (byte) 0xCA;
   static final byte INS_STORE_DATA = (byte) 0xE2;
-
 
   static final short SW_REFERENCED_DATA_NOT_FOUND = (short) 0x6A88;
 
@@ -108,12 +108,15 @@ public class KeycardApplet extends Applet {
 
   static final byte[] EIP_1581_PREFIX = { (byte) 0x80, 0x00, 0x00, 0x2B, (byte) 0x80, 0x00, 0x00, 0x3C, (byte) 0x80, 0x00, 0x06, 0x2D};
 
+  static final byte NUM_STORAGE_SLOTS = 5;
+  static final byte SFLAG_NON_EXPORTABLE = 1;
+  static final byte SFLAG_EXPORTABLE = 2;
+
   private OwnerPIN pin;
   private OwnerPIN puk;
   private byte[] uid;
   private SecureChannel secureChannel;
 
-  static final byte NUM_STORAGE_SLOTS = 5;
   private byte[] seedStore;
   private short[] seedStoreFlags;
   private ECPrivateKey[] privateKeyStore;
@@ -303,6 +306,9 @@ public class KeycardApplet extends Applet {
           break;
         case INS_GENERATE_KEY:
           generateKey(apdu);
+          break;
+        case INS_GENERATE_KEY_WITH_FLAG:
+          generateSeedWithFlag(apdu);
           break;
         case INS_DUPLICATE_KEY:
           duplicateKey(apdu);
@@ -823,6 +829,53 @@ public class KeycardApplet extends Applet {
     JCSystem.commitTransaction();
   }
 
+  /**
+   * Processes GENERATE_SEED_WITH_FLAG command. Requires a secure channel to already be open and the PIN to be verified.
+   * 1. Generate a new seed with a TRNG
+   * 2. Flag the slot with the desired option
+   * 3. Activate the seed, replacing `masterSeed` with this one
+   * 4. Return UID for the seed
+   * Functions like `generateKey`, but with storage.
+   */
+
+  private void generateSeedWithFlag(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+    secureChannel.preprocessAPDU(apduBuffer);
+
+    if (!pin.isValidated()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+
+    // Storage slot in which to store the seed
+    short slotIdx = apduBuffer[ISO7816.OFFSET_P1];
+    // Flag specifying options/restrictions for the wallet derived from the seed
+    short flag = apduBuffer[ISO7816.OFFSET_P2];
+    
+    if (slotIdx > NUM_STORAGE_SLOTS - 1 || flag == 0) {
+      // Avoid overflows || Avoid flag=0, which indicates an empty slot
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+
+    apduBuffer[ISO7816.OFFSET_LC] = BIP39_SEED_SIZE;
+    crypto.random.generateData(apduBuffer, ISO7816.OFFSET_CDATA, BIP39_SEED_SIZE);
+
+    // Save, flag, and activate the new seed
+    storeSeedWithFlag(slotIdx, flag, apduBuffer);
+    
+    pinlessPathLen = 0;
+    generateKeyUIDAndRespond(apdu, apduBuffer);
+  }
+
+  /**
+   * Processes the LOAD_SEED_WITH_FLAG command. Requires a secure channel to be already open and the PIN to be verified.
+   * 1. Store a provided seed in the desired storage slot
+   * 2. Flag the slot with the desired option
+   * 3. Activate the seed, replacing `masterSeed` with this one
+   * 4. Return UID for the seed
+   * Functions like `loadKey` for seeds, but with storage.
+   *
+   * @param apdu the JCRE-owned APDU object.
+   */
   private void loadSeedWithFlag(APDU apdu) {
     byte[] apduBuffer = apdu.getBuffer();
     secureChannel.preprocessAPDU(apduBuffer);
@@ -836,6 +889,23 @@ public class KeycardApplet extends Applet {
     // Flag specifying options/restrictions for the wallet derived from the seed
     short flag = apduBuffer[ISO7816.OFFSET_P2];
 
+    // Store the stuff
+    storeSeedWithFlag(slotIdx, flag, apduBuffer);
+
+    pinlessPathLen = 0;
+    generateKeyUIDAndRespond(apdu, apduBuffer);
+  }
+
+    /**
+   * Internal function to:
+   * 1. Store the provided seed (64 bytes) in one of the storage slots (slotIdx) with flag
+   * 2. Set this newly stored seed as the current master seed
+   *
+   * @param slotIdx    - the seed storage index (must be less than NUM_STORAGE_SLOTS)
+   * @param flag       - a flag denoting attributes of this seed (e.g. can it be exported)
+   * @param apduBuffer - the seed itself
+   */
+  private void storeSeedWithFlag(short slotIdx, short flag, byte[] apduBuffer) {
     if (slotIdx > NUM_STORAGE_SLOTS - 1 || flag == 0) {
       // Avoid overflows || Avoid flag=0, which indicates an empty slot
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
@@ -850,20 +920,17 @@ public class KeycardApplet extends Applet {
     }
     
     JCSystem.beginTransaction();
-    
+
     // Store the seed at the correct offset
     Util.arrayCopy(apduBuffer, (short) ISO7816.OFFSET_CDATA, seedStore, (short) off, BIP39_SEED_SIZE);
     seedStoreFlags[slotIdx] = flag;
     currentSeedIdx = (byte) slotIdx;
-
-    // Activate the seed
-    loadSeed(apduBuffer);
-
-    resetKeyStatus();
-    JCSystem.commitTransaction();
     
-    pinlessPathLen = 0;
-    generateKeyUIDAndRespond(apdu, apduBuffer);
+    // Make this the current seed
+    loadSeed(apduBuffer);
+    resetKeyStatus();
+    
+    JCSystem.commitTransaction();
   }
 
 
