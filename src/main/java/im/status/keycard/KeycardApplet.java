@@ -28,6 +28,8 @@ public class KeycardApplet extends Applet {
   static final byte INS_SET_PINLESS_PATH = (byte) 0xC1;
   static final byte INS_EXPORT_KEY = (byte) 0xC2;
   static final byte INS_EXPORT_SEED = (byte) 0xC3;
+  static final byte INS_CHANGE_SEED = (byte) 0xC4;
+  static final byte INS_DELETE_SEED = (byte) 0xC5;
   static final byte INS_GET_DATA = (byte) 0xCA;
   static final byte INS_STORE_DATA = (byte) 0xE2;
 
@@ -109,8 +111,11 @@ public class KeycardApplet extends Applet {
   static final byte[] EIP_1581_PREFIX = { (byte) 0x80, 0x00, 0x00, 0x2B, (byte) 0x80, 0x00, 0x00, 0x3C, (byte) 0x80, 0x00, 0x06, 0x2D};
 
   static final byte NUM_STORAGE_SLOTS = 5;
+  static final byte NUM_KEYS_PER_SLOT = 5;
+  static final byte SFLAG_EMPTY = 0;
   static final byte SFLAG_NON_EXPORTABLE = 1;
   static final byte SFLAG_EXPORTABLE = 2;
+  static final byte SFLAG_MAX = 2;
 
   private OwnerPIN pin;
   private OwnerPIN puk;
@@ -118,7 +123,7 @@ public class KeycardApplet extends Applet {
   private SecureChannel secureChannel;
 
   private byte[] seedStore;
-  private short[] seedStoreFlags;
+  private byte[] seedStoreFlags;
   private ECPrivateKey[] privateKeyStore;
   private ECPublicKey[] publicKeyStore;
   
@@ -193,10 +198,10 @@ public class KeycardApplet extends Applet {
 
     seedStore = new byte[NUM_STORAGE_SLOTS*BIP39_SEED_SIZE];
     currentSeedIdx = 0;
-    seedStoreFlags = new short[NUM_STORAGE_SLOTS];
-    privateKeyStore = new ECPrivateKey[NUM_STORAGE_SLOTS];
-    publicKeyStore = new ECPublicKey[NUM_STORAGE_SLOTS];
-    for (short i=0; i < NUM_STORAGE_SLOTS; i++) {
+    seedStoreFlags = new byte[NUM_STORAGE_SLOTS];
+    privateKeyStore = new ECPrivateKey[NUM_STORAGE_SLOTS*NUM_KEYS_PER_SLOT];
+    publicKeyStore = new ECPublicKey[NUM_STORAGE_SLOTS*NUM_KEYS_PER_SLOT];
+    for (short i=0; i < NUM_STORAGE_SLOTS*NUM_KEYS_PER_SLOT; i++) {
       privateKeyStore[i] = (ECPrivateKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PRIVATE, SECP256k1.SECP256K1_KEY_SIZE, false);
       publicKeyStore[i] = (ECPublicKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PUBLIC, SECP256k1.SECP256K1_KEY_SIZE, false);
     }
@@ -324,6 +329,12 @@ public class KeycardApplet extends Applet {
           break;
         case INS_EXPORT_SEED:
           exportSeed(apdu);
+          break;
+        case INS_CHANGE_SEED:
+          changeSeed(apdu);
+          break;
+        case INS_DELETE_SEED:
+          deleteSeed(apdu);
           break;
         case INS_GET_DATA:
           getData(apdu);
@@ -849,9 +860,9 @@ public class KeycardApplet extends Applet {
     // Storage slot in which to store the seed
     short slotIdx = apduBuffer[ISO7816.OFFSET_P1];
     // Flag specifying options/restrictions for the wallet derived from the seed
-    short flag = apduBuffer[ISO7816.OFFSET_P2];
+    byte flag = (byte) apduBuffer[ISO7816.OFFSET_P2];
     
-    if (slotIdx > NUM_STORAGE_SLOTS - 1 || flag == 0) {
+    if (slotIdx > NUM_STORAGE_SLOTS - 1 || flag == 0 || flag > SFLAG_MAX) {
       // Avoid overflows || Avoid flag=0, which indicates an empty slot
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
@@ -906,31 +917,35 @@ public class KeycardApplet extends Applet {
    * @param apduBuffer - the seed itself
    */
   private void storeSeedWithFlag(short slotIdx, short flag, byte[] apduBuffer) {
-    if (slotIdx > NUM_STORAGE_SLOTS - 1 || flag == 0) {
+    if (slotIdx > NUM_STORAGE_SLOTS - 1 || flag == 0 || flag > SFLAG_MAX) {
       // Avoid overflows || Avoid flag=0, which indicates an empty slot
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }
 
     // Seeds are stored in a 1D byte array using offsets
     // which are multiples of BIP39_SEED_SIZE
-    short off = 0;
-    byte chunk = (byte) BIP39_SEED_SIZE;
-    for (byte i = 0; i < slotIdx; i++) {
-      off += chunk;
-    }
+    short off = getSeedOffset(slotIdx);
     
     JCSystem.beginTransaction();
 
     // Store the seed at the correct offset
     Util.arrayCopy(apduBuffer, (short) ISO7816.OFFSET_CDATA, seedStore, (short) off, BIP39_SEED_SIZE);
-    seedStoreFlags[slotIdx] = flag;
+    seedStoreFlags[slotIdx] = (byte) flag;
     currentSeedIdx = (byte) slotIdx;
     
     // Make this the current seed
     loadSeed(apduBuffer);
-    resetKeyStatus();
     
     JCSystem.commitTransaction();
+  }
+
+  private short getSeedOffset(short slotIdx) {
+    short off = 0;
+    byte chunk = (byte) BIP39_SEED_SIZE;
+    for (byte i = 0; i < slotIdx; i++) {
+      off += chunk;
+    }
+    return off;
   }
 
 
@@ -1486,24 +1501,102 @@ public class KeycardApplet extends Applet {
   }
 
   /**
-   * Processes the EXPORT SEED command. Requires an open secure channel and the PIN to be verified.
-   *
+   * Processes the EXPORT_SEED command. Requires an open secure channel and the PIN to be verified.
+   * Exports the current seed, but only if it corresponds to a flag that allows export
    * @param apdu the JCRE-owned APDU object.
    */
   private void exportSeed(APDU apdu) {
     byte[] apduBuffer = apdu.getBuffer();
     secureChannel.preprocessAPDU(apduBuffer);
 
-    // TODO: Also ensure masterSeed isn't empty
     if (!pin.isValidated() || masterSeed.length < 1) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
 
+    JCSystem.beginTransaction();
+
+    short idx = currentSeedIdx;
+    if (seedStoreFlags[idx] == SFLAG_NON_EXPORTABLE) {
+      ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);      
+    }
+
     short off = SecureChannel.SC_OUT_OFFSET;
-    Util.arrayCopyNonAtomic(masterSeed, (short) 0, apduBuffer, off , BIP39_SEED_SIZE);
+    Util.arrayCopy(masterSeed, (short) 0, apduBuffer, off , BIP39_SEED_SIZE);
     
+    JCSystem.commitTransaction();
+
     secureChannel.respond(apdu, BIP39_SEED_SIZE, ISO7816.SW_NO_ERROR);
   }
+
+  /**
+   * Process CHANGE_SEED command. Requires an open secure channel and verified PIN.
+   * Given a slot index, replace the current seed with the seed located at that index.
+   * @param apdu the JCRE-owned APDU object
+   */
+  private void changeSeed(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+
+    if (!pin.isValidated()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+
+    // Storage slot in which to find the seed
+    short slotIdx = apduBuffer[ISO7816.OFFSET_P1];
+    if (slotIdx > NUM_STORAGE_SLOTS - 1) {
+      // Seed index must be within bounds of storage
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+    if (seedStoreFlags[slotIdx] == SFLAG_EMPTY) {
+      // Seed must be nonzero
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
+    short off = getSeedOffset(slotIdx);
+
+    JCSystem.beginTransaction();
+
+    Util.arrayCopy(apduBuffer, (short) ISO7816.OFFSET_CDATA, seedStore, (short) off, BIP39_SEED_SIZE);
+    currentSeedIdx = (byte) slotIdx;
+    loadSeed(apduBuffer);
+
+    JCSystem.commitTransaction();
+  }
+
+  /**
+   * Process DELETE_SEED command. Requries an open secure channel and a verified PIN
+   * Given a slot index, delete the seed at that slot.
+   * The user may not delete the *current* seed.
+   * @param apdu the JCRE-owned APDU object
+   */
+  private void deleteSeed(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+
+    if (!pin.isValidated()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+
+    // Storage slot in which to find the seed
+    short slotIdx = apduBuffer[ISO7816.OFFSET_P1];
+    if (slotIdx > NUM_STORAGE_SLOTS - 1) {
+      // Seed index must be within bounds of storage
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
+    if (seedStoreFlags[slotIdx] == SFLAG_EMPTY || currentSeedIdx == slotIdx) {
+      // Seed must be nonzero and may not be current seed
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    short off = getSeedOffset(slotIdx);
+
+    JCSystem.beginTransaction();
+
+    Util.arrayFillNonAtomic(seedStore, (short) off, BIP39_SEED_SIZE, (byte) 0);
+    seedStoreFlags[slotIdx] = SFLAG_EMPTY;
+
+    JCSystem.commitTransaction();
+
+  }
+
+
 
   /**
    * Processes the EXPORT KEY command. Requires an open secure channel and the PIN to be verified.
