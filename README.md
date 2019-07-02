@@ -1,8 +1,31 @@
 # SafeCard
 
+## Building and Installing
+
+SafeCard binaries come in the form of `.cap` files, which can be created with:
+
+```
+rm -r build && ./gradlew clean && ./gradlew compileJavacard
+```
+
+This produces the following file:
+
+```
+./build/javacard/im/status/keycard/javacard/keycard.cap
+```
+
+which serves as the distribution.
+
+The following commands are used for installation and development:
+
+* `./gradlew install` - installs the applet
+* `./gradlew build` - builds, installs, and tests the applet
+
+## Features and Changes
+
 This repo contains the Javacard applet that runs on the GridPlus SafeCard. It is a fork of the [Status KeyCard](https://github.com/status-im/status-keycard), with only a few notable changes. They are documented below.
 
-## `SELECT`
+### `SELECT`
 
 The `SELECT` command returns the same data as [Status' response](https://status.im/keycard_api/apdu_select.html) with one
 additional piece appended to the end of the response data:
@@ -14,7 +37,7 @@ The value will be one of the following:
 * Seed initialized but not exportable: `1`
 * Seed initialized and exportable: `2`
 
-## Certificates and Card Authentication
+### Certificates and Card Authentication
 
 GridPlus SafeCards are typically used with a secure interface (the Lattice1), which queries the card for its certificates. Each cert is an ECDSA signature on the card's "authentication" public key and is signed by a GridPlus certificate authority. There are between 1 and 3 certs stored on the card.
 
@@ -53,8 +76,7 @@ This APDU allows the user to request a signature on a hash from the "auth" keypa
 
 > Note that this signature template is the same as what `SIGN` would produce. I'm not sure where some of the tag byte values come from.
 
-
-## Master Seed
+### Master Seed
 
 Status does not currently save the master seed and, as such, does not allow the user to export that seed for backup purposes. This is understandable, as Status cannot assume a secure interface. However, GridPlus can - the Lattice1 (and specifically a secure compute element inside) is the main interface for SafeCards.
 
@@ -91,7 +113,7 @@ This APDU allows the card holder to export the master seed if they designated it
 
 > `seed` is a 64-byte master seed
 
-## Intermediate Public Keys
+### Intermediate Public Keys
 
 GridPlus wishes to export intermediate public keys (e.g. `m/44'/60'/0'/`), which can be used to create fully derived (unhardened) public keys (e.g. `m/44'/60'/0'/0/0`) *outside of the card environment*. In order to do external child key derivations, we need to export the chaincode as well.
 
