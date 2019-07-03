@@ -872,6 +872,12 @@ public class KeycardApplet extends Applet {
     Signature tmpSig = Signature.getInstance(Signature.ALG_ECDSA_SHA_256, false);
     byte[] apduBuffer = apdu.getBuffer();
     apdu.setIncomingAndReceive();
+
+    // Ensure a 32-byte hash was passed
+    if (apduBuffer[ISO7816.OFFSET_LC] != Crypto.KEY_SECRET_SIZE) {
+      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    }
+
     byte[] msgHash = JCSystem.makeTransientByteArray(Crypto.KEY_SECRET_SIZE, JCSystem.CLEAR_ON_RESET);
     Util.arrayCopyNonAtomic(apduBuffer, (short) ISO7816.OFFSET_CDATA, msgHash, (short) 0, Crypto.KEY_SECRET_SIZE);
 
@@ -884,7 +890,7 @@ public class KeycardApplet extends Applet {
     short outLen = apduBuffer[4] = Crypto.KEY_PUB_SIZE;
     idPublic.getW(apduBuffer, (short) 5);
     outLen += 5;
-    
+     
     short sigOff = outLen;
 
     // Add signature of msg hash
