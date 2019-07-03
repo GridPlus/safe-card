@@ -241,10 +241,10 @@ public class KeycardApplet extends Applet {
     secp256k1.setCurveParameters(idPrivate);
 
     // Load the certs auth keypair with data
-    byte[] privBuf = new byte[Crypto.KEY_SECRET_SIZE];
+    byte[] privBuf = JCSystem.makeTransientByteArray((short) Crypto.KEY_SECRET_SIZE, JCSystem.CLEAR_ON_RESET);
     crypto.random.generateData(privBuf, (short) 0, Crypto.KEY_SECRET_SIZE);
     idPrivate.setS(privBuf, (short) 0, Crypto.KEY_SECRET_SIZE);
-    byte[] pubBuf = new byte[Crypto.KEY_PUB_SIZE];
+    byte[] pubBuf = JCSystem.makeTransientByteArray((short) Crypto.KEY_PUB_SIZE, JCSystem.CLEAR_ON_RESET);
     secp256k1.derivePublicKey(privBuf, (short) 0, pubBuf, (short) 0);
     idPublic.setW(pubBuf, (short) 0, Crypto.KEY_PUB_SIZE);
 
@@ -872,7 +872,7 @@ public class KeycardApplet extends Applet {
     Signature tmpSig = Signature.getInstance(Signature.ALG_ECDSA_SHA_256, false);
     byte[] apduBuffer = apdu.getBuffer();
     apdu.setIncomingAndReceive();
-    byte[] msgHash = new byte[Crypto.KEY_SECRET_SIZE];
+    byte[] msgHash = JCSystem.makeTransientByteArray(Crypto.KEY_SECRET_SIZE, JCSystem.CLEAR_ON_RESET);
     Util.arrayCopyNonAtomic(apduBuffer, (short) ISO7816.OFFSET_CDATA, msgHash, (short) 0, Crypto.KEY_SECRET_SIZE);
 
     // Start a signature template. This logic is meant to be very similar to that in `sign()`
