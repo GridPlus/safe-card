@@ -1537,7 +1537,28 @@ public class KeycardTest {
     byte[] hash = sha256(preImage);
     APDUResponse response;
     Signature tmpSig = Signature.getInstance("SHA256withECDSA", "BC");
-    
+
+    byte[] shortHash = { 
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 0,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 0,
+      1
+    };
+
+    byte[] longHash = { 
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 0,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 0,
+      1, 2, 3
+    };
+
+    // Fail to request sigs on incorrect length
+    response = cmdSet.sendCommand(KeycardApplet.INS_AUTHENTICATE, (byte) 0, (byte) 0, shortHash);
+    assertEquals(ISO7816.SW_DATA_INVALID, response.getSw());
+    response = cmdSet.sendCommand(KeycardApplet.INS_AUTHENTICATE, (byte) 0, (byte) 0, longHash);
+    assertEquals(ISO7816.SW_DATA_INVALID, response.getSw());
+
+
     // Get public key and signature
     response = cmdSet.sendCommand(KeycardApplet.INS_AUTHENTICATE, (byte) 0, (byte) 0, hash);
     assertEquals(0x9000, response.getSw());
@@ -1575,7 +1596,7 @@ public class KeycardTest {
     random.nextBytes(longCert);
     response = cmdSet.loadCerts(longCert);
     assertEquals(ISO7816.SW_DATA_INVALID, response.getSw());
-    System.out.println("cert " + Arrays.toString(cert));
+
     // Should successfully load certs of the correct len
     response = cmdSet.loadCerts(cert);
     assertEquals(0x9000, response.getSw());
