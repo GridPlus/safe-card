@@ -869,37 +869,31 @@ public class KeycardApplet extends Applet {
   }
 
   private void authenticate(APDU apdu) {
-    Signature tmpSig = Signature.getInstance(Signature.ALG_ECDSA_SHA_256, false);
     byte[] apduBuffer = apdu.getBuffer();
     apdu.setIncomingAndReceive();
 
     // Ensure a 32-byte hash was passed
-    if (apduBuffer[ISO7816.OFFSET_LC] != Crypto.KEY_SECRET_SIZE) {
+    if (apduBuffer[ISO7816.OFFSET_LC] != MessageDigest.LENGTH_SHA_256) {
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
 
-    byte[] msgHash = JCSystem.makeTransientByteArray(Crypto.KEY_SECRET_SIZE, JCSystem.CLEAR_ON_RESET);
-    Util.arrayCopyNonAtomic(apduBuffer, (short) ISO7816.OFFSET_CDATA, msgHash, (short) 0, Crypto.KEY_SECRET_SIZE);
+    // Init the tmpSig with the private id key
+    signature.init(idPrivate, Signature.MODE_SIGN);
 
     // Start a signature template. This logic is meant to be very similar to that in `sign()`
+    short outLen = (short) (5 + Crypto.KEY_PUB_SIZE);
+    // First make the signature and hash. This allows us to sign the correct data before overwriting apduBuffer
+    outLen += signature.signPreComputedHash(apduBuffer, (short) ISO7816.OFFSET_CDATA, MessageDigest.LENGTH_SHA_256, apduBuffer, outLen);
+    outLen += crypto.fixS(apduBuffer, outLen);
+
+    // Backfill the first part of apduBuffer
     apduBuffer[0] = TLV_SIGNATURE_TEMPLATE;
     apduBuffer[1] = (byte) 0x81;
-    
+    apduBuffer[2] = (byte) (outLen - 3);
     // Add public key for verification
     apduBuffer[3] = TLV_PUB_KEY;
-    short outLen = apduBuffer[4] = Crypto.KEY_PUB_SIZE;
+    apduBuffer[4] = (byte) Crypto.KEY_PUB_SIZE;
     idPublic.getW(apduBuffer, (short) 5);
-    outLen += 5;
-     
-    short sigOff = outLen;
-
-    // Add signature of msg hash
-    tmpSig.init(idPrivate, Signature.MODE_SIGN);
-    outLen += tmpSig.signPreComputedHash(msgHash, (short) 0, MessageDigest.LENGTH_SHA_256, apduBuffer, sigOff);
-    outLen += crypto.fixS(apduBuffer, sigOff);
-
-    // // Finally add the full payload length to the front
-    apduBuffer[2] = (byte) (outLen - 3);
 
     apdu.setOutgoingAndSend((short) 0, (short) outLen);    
   }

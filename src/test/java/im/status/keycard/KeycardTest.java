@@ -1563,7 +1563,6 @@ public class KeycardTest {
     response = cmdSet.sendCommand(KeycardApplet.INS_AUTHENTICATE, (byte) 0, (byte) 0, hash);
     assertEquals(0x9000, response.getSw());
     byte[] data = response.getData();
-
     byte[] keyData = extractPublicKeyFromSignature(data);
     byte[] sig = extractSignature(data);
 
