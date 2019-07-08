@@ -1558,7 +1558,6 @@ public class KeycardTest {
     response = cmdSet.sendCommand(KeycardApplet.INS_AUTHENTICATE, (byte) 0, (byte) 0, longHash);
     assertEquals(ISO7816.SW_DATA_INVALID, response.getSw());
 
-
     // Get public key and signature
     response = cmdSet.sendCommand(KeycardApplet.INS_AUTHENTICATE, (byte) 0, (byte) 0, hash);
     assertEquals(0x9000, response.getSw());
@@ -1575,7 +1574,6 @@ public class KeycardTest {
     assertTrue(tmpSig.verify(sig));
   }
 
-
   @Test
   @DisplayName("Certs")
   void loadCertsTest() throws Exception {
@@ -1585,18 +1583,19 @@ public class KeycardTest {
     APDUResponse response;
 
     // Should fail to load data that is too short
-    byte[] shortCert = new byte[63];
+    byte[] shortCert = new byte[69];
     random.nextBytes(shortCert);
     response = cmdSet.loadCerts(shortCert);
     assertEquals(ISO7816.SW_DATA_INVALID, response.getSw());
 
     // Should fail to load data that is too long
-    byte[] longCert = new byte[65];
+    byte[] longCert = new byte[73];
     random.nextBytes(longCert);
     response = cmdSet.loadCerts(longCert);
     assertEquals(ISO7816.SW_DATA_INVALID, response.getSw());
 
     // Should successfully load certs of the correct len
+    // Note that certs can really be 70-72 bytes given the variability of r and s
     response = cmdSet.loadCerts(cert);
     assertEquals(0x9000, response.getSw());
 

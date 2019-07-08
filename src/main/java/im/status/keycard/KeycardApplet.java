@@ -14,7 +14,7 @@ public class KeycardApplet extends Applet {
   static final byte INS_SET_NDEF = (byte) 0xF3;
   static final byte INS_INIT = (byte) 0xFE;
   static final byte INS_LOAD_CERT = (byte) 0xFA;
-  static final byte INS_EXPORT_CERTS = (byte) 0xFB;
+  static final byte INS_EXPORT_CERT = (byte) 0xFB;
   static final byte INS_VERIFY_PIN = (byte) 0x20;
   static final byte INS_CHANGE_PIN = (byte) 0x21;
   static final byte INS_UNBLOCK_PIN = (byte) 0x22;
@@ -128,7 +128,7 @@ public class KeycardApplet extends Applet {
   private byte[] uid;
   private SecureChannel secureChannel;
 
-  static final short CERT_LEN = 64;
+  static final short CERT_LEN = 72; // Maximum DER length
   private byte[] cert;
   private byte certLoaded;
   private ECPublicKey idPublic;
@@ -203,7 +203,6 @@ public class KeycardApplet extends Applet {
     uid = new byte[UID_LENGTH];
     crypto.random.generateData(uid, (short) 0, UID_LENGTH);
 
-    // Room for 3 certs
     cert = new byte[CERT_LEN];
     certLoaded = 0;
 
@@ -280,7 +279,7 @@ public class KeycardApplet extends Applet {
 
     // Cert reading can happen either at init or before it,
     // so we should check it here
-    if (code == INS_EXPORT_CERTS) {
+    if (code == INS_EXPORT_CERT) {
       exportCerts(apdu);
       return;
     }
@@ -825,7 +824,7 @@ public class KeycardApplet extends Applet {
 
   /**
    * Processes the LOAD_CERTS command. Copies the APDU buffer into `certs`.
-   * This function may only be called once.
+   * This function expects a DER signature and may only be called once.
    * @param apdu the JCRE-owned APDU object.
    */
   private void loadCert(APDU apdu) {
@@ -836,20 +835,20 @@ public class KeycardApplet extends Applet {
       // Only allow this to happen once and make sure it's an appropriate size
       ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
     }
-    
-    JCSystem.beginTransaction();
-    
-    // Get length of certs
+
+    // Ensure the signature fits in the allocated buffer
+    // DER signatures are between 70 and 72 bytes, as R and S components
+    // are each either 32 or (rarely) 33 bytes
     short len = (short) (apduBuffer[ISO7816.OFFSET_LC] & 0x00FF);
-    if (len != CERT_LEN) {
+    if (len > CERT_LEN || len < (short) (CERT_LEN - 2)) {
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
-
-    Util.arrayCopy(apduBuffer, (short) ISO7816.OFFSET_CDATA, cert, (short) 0, len);
     
+    // Load the DER signature as a cert
+    JCSystem.beginTransaction();
+    Util.arrayCopy(apduBuffer, (short) ISO7816.OFFSET_CDATA, cert, (short) 0, len);
     // Prevent any future calls of this function
     certLoaded = 1;
-
     JCSystem.commitTransaction();
   } 
 
