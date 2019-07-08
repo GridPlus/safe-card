@@ -5,7 +5,7 @@
 SafeCard binaries come in the form of `.cap` files, which can be created with:
 
 ```
-rm -r build && ./gradlew clean && ./gradlew compileJavacard
+rm -r build && ./gradlew clean && ./gradlew convertJavacard
 ```
 
 This produces the following file:
