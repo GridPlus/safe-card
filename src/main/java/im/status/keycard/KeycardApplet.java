@@ -28,8 +28,6 @@ public class KeycardApplet extends Applet {
   static final byte INS_SET_PINLESS_PATH = (byte) 0xC1;
   static final byte INS_EXPORT_KEY = (byte) 0xC2;
   static final byte INS_EXPORT_SEED = (byte) 0xC3;
-  static final byte INS_GET_DATA = (byte) 0xCA;
-  static final byte INS_STORE_DATA = (byte) 0xE2;
   static final byte INS_AUTHENTICATE = (byte) 0xEE;
 
   static final short SW_REFERENCED_DATA_NOT_FOUND = (short) 0x6A88;
@@ -41,7 +39,6 @@ public class KeycardApplet extends Applet {
   static final byte KEY_PATH_MAX_DEPTH = 10;
   static final byte PAIRING_MAX_CLIENT_COUNT = 1;
   static final byte UID_LENGTH = 16;
-  static final byte MAX_DATA_LENGTH = 127;
 
   static final short CHAIN_CODE_SIZE = 32;
   static final short KEY_UID_LENGTH = 32;
@@ -170,8 +167,6 @@ public class KeycardApplet extends Applet {
 
   private byte[] derivationOutput;
 
-  private byte[] data;
-
   /**
    * Invoked during applet installation. Creates an instance of this class. The installation parameters are passed in
    * the given buffer.
@@ -253,8 +248,6 @@ public class KeycardApplet extends Applet {
     expectedEntropy = -1;
 
     derivationOutput = JCSystem.makeTransientByteArray((short) (Crypto.KEY_SECRET_SIZE + CHAIN_CODE_SIZE), JCSystem.CLEAR_ON_RESET);
-
-    data = new byte[MAX_DATA_LENGTH + 1];
 
     register(bArray, (short) (bOffset + 1), bArray[bOffset]);
   }
@@ -363,12 +356,6 @@ public class KeycardApplet extends Applet {
           break;
         case INS_EXPORT_SEED:
           exportSeed(apdu);
-          break;
-        case INS_GET_DATA:
-          getData(apdu);
-          break;
-        case INS_STORE_DATA:
-          storeData(apdu);
           break;
         default:
           ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
@@ -1698,52 +1685,6 @@ public class KeycardApplet extends Applet {
     apduBuffer[(SecureChannel.SC_OUT_OFFSET + 1)] = (byte) (len - 2);
 
     secureChannel.respond(apdu, len, ISO7816.SW_NO_ERROR);
-  }
-
-  /**
-   * Processes the GET DATA command.
-   *
-   * @param apdu the JCRE-owned APDU object.
-   */
-  private void getData(APDU apdu) {
-    byte[] apduBuffer = apdu.getBuffer();
-
-    if (secureChannel.isOpen()) {
-      secureChannel.preprocessAPDU(apduBuffer);
-    }
-
-    short outLen = Util.makeShort((byte) 0x00, data[0]);
-    Util.arrayCopyNonAtomic(data, (short) 1, apduBuffer, SecureChannel.SC_OUT_OFFSET, outLen);
-
-    if (secureChannel.isOpen()) {
-      secureChannel.respond(apdu, outLen, ISO7816.SW_NO_ERROR);
-    } else {
-      apdu.setOutgoingAndSend(SecureChannel.SC_OUT_OFFSET, outLen);
-    }
-  }
-
-  /**
-   * Processes the STORE DATA command. Requires an open secure channel and the PIN to be verified.
-   *
-   * @param apdu the JCRE-owned APDU object.
-   */
-  private void storeData(APDU apdu) {
-    byte[] apduBuffer = apdu.getBuffer();
-    secureChannel.preprocessAPDU(apduBuffer);
-
-    if (!pin.isValidated()) {
-      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
-    }
-
-    short dataLen = Util.makeShort((byte) 0x00, apduBuffer[ISO7816.OFFSET_LC]);
-
-    if (dataLen > MAX_DATA_LENGTH) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
-
-    JCSystem.beginTransaction();
-    Util.arrayCopy(apduBuffer, ISO7816.OFFSET_LC, data, (short) 0, (short)(dataLen + 1));
-    JCSystem.commitTransaction();
   }
 
   /**
