@@ -259,7 +259,7 @@ public class KeycardStressTest {
     // Load a cert
 
     // Run the stress test
-    runTest(2, 2);
+    runTest(15, 50);
   }
 
 
@@ -269,6 +269,7 @@ public class KeycardStressTest {
     byte[] hash = new byte[32];
     // Do this `n` times:
     for (int n = 0; n < outerIter; n++) {
+      System.out.println(n);
 
       // 1. Generate seed on card (non-exportable)
       byte empty = (byte) 0;
@@ -496,7 +497,15 @@ public class KeycardStressTest {
     signature.initVerify(cardKey);
     assertEquals((SecureChannel.SC_KEY_LENGTH * 2 / 8) + 1, pubKey.length);    
     signature.update(preImage);
-    assertTrue(signature.verify(sig));
+    try {
+      assertTrue(signature.verify(sig));
+    } catch (java.security.SignatureException e) {
+      System.out.println("Error verifying signature");
+      System.out.println(e);
+      System.out.println("PubKey used:     " + Arrays.toString(pubKey));
+      System.out.println("PreImage used:   " + Arrays.toString(preImage));
+      System.out.println("Signature bytes: " + Arrays.toString(sig));
+    }
     assertFalse(isMalleable(sig));
   }
 
