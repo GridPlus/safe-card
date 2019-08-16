@@ -88,9 +88,11 @@ public class KeycardApplet extends Applet {
   static final byte TLV_PUB_KEY = (byte) 0x80;
   static final byte TLV_PRIV_KEY = (byte) 0x81;
   static final byte TLV_CHAIN_CODE = (byte) 0x82;
+  static final byte TLV_CHALLENGE = (byte) 0x83;
 
   static final byte TLV_SEED = (byte) 0x90;
   static final byte TLV_CERT = (byte) 0x91;
+  static final byte TLV_HASH = (byte) 0x9D;
   static final byte TLV_SEED_FLAG = (byte) 0x9F;
 
   static final byte TLV_APPLICATION_STATUS_TEMPLATE = (byte) 0xA3;
@@ -126,7 +128,9 @@ public class KeycardApplet extends Applet {
   private SecureChannel secureChannel;
 
   static final short CERT_LEN = 72; // Maximum DER length
+  static final short HASH_LEN = 32;
   private byte[] cert;
+  private byte[] certSignerPub;
   private byte certLoaded;
   private ECPublicKey idPublic;
   private ECPrivateKey idPrivate;
@@ -199,6 +203,7 @@ public class KeycardApplet extends Applet {
     crypto.random.generateData(uid, (short) 0, UID_LENGTH);
 
     cert = new byte[CERT_LEN];
+    certSignerPub = new byte[65];
     certLoaded = 0;
 
     masterSeed = new byte[BIP39_SEED_SIZE];
@@ -307,7 +312,7 @@ public class KeycardApplet extends Applet {
           secureChannel.mutuallyAuthenticate(apdu);
           break;
         case SecureChannel.INS_PAIR:
-          secureChannel.pair(apdu);
+          pair(apdu);
           break;
         case SecureChannel.INS_UNPAIR:
           unpair(apdu);
@@ -809,6 +814,11 @@ public class KeycardApplet extends Applet {
     keyPathLen = 0;
   }
 
+  private boolean verifyPairCert(byte[] data) {
+    // Get card challenge (`secret` set in pairStep1 in SecureChannel.java)
+
+  }
+
   /**
    * Processes the LOAD_CERTS command. Copies the APDU buffer into `certs`.
    * This function expects a DER signature and may only be called once.
@@ -882,6 +892,63 @@ public class KeycardApplet extends Applet {
     idPublic.getW(apduBuffer, (short) 5);
 
     apdu.setOutgoingAndSend((short) 0, (short) outLen);    
+  }
+
+  private void pair(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+    if (apduBuffer[ISO7816.OFFSET_LC] != secureChannel.SC_SECRET_LENGTH) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+
+    if (apduBuffer[ISO7816.OFFSET_P1] == secureChannel.PAIR_P1_FIRST_STEP) {
+      // Ensure a 32-byte challenge was passed
+      if (apduBuffer[ISO7816.OFFSET_LC] != MessageDigest.LENGTH_SHA_256) {
+        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+      }
+
+      // Offset based on the data we will get back from pairStep1 (i.e. the cardChallenge  + TLV bytes)
+      short off = (short) MessageDigest.LENGTH_SHA_256 + 2;
+
+      // 1. Load the cert
+      Util.arrayCopy(cert, (short) 0, apduBuffer, (short) off, (short) cert.length);
+      off += cert.length;
+
+      // 2. Build a signature template
+      apduBuffer[off] = TLV_SIGNATURE_TEMPLATE;
+      apduBuffer[(short) (off + 1)] = (byte) 0x81;
+      apduBuffer[(short) (off + 3)] = TLV_PUB_KEY;
+      short outLen = apduBuffer[(short) (off + 4)] = Crypto.KEY_PUB_SIZE;
+
+      // Copy the card's pubkey into the apduBuffer
+      idPublic.getW(apduBuffer, (short) (off + 5));
+      
+      // Setup for signature
+      outLen += 5;
+      short sigOff = (short) (outLen + off);
+      
+      // Sign the challenge and set it in the apduBuffer after the pairing data
+      // (the pairing data will be 64 bytes)
+      signature.init(idPrivate, Signature.MODE_SIGN);
+      outLen += signature.signPreComputedHash(apduBuffer, 
+                                                (short) ISO7816.OFFSET_CDATA,      // Sign the provided challenge
+                                                (short) MessageDigest.LENGTH_SHA_256, 
+                                                apduBuffer,
+                                                off);
+      outLen += crypto.fixS(apduBuffer, sigOff);
+      // Put in the full length of the signature template
+      apduBuffer[(short) (off + 2)] = (byte) (outLen - 3);
+
+      
+      // Generate a card challenge 
+      apduBuffer[0] = TLV_CHALLENGE;
+      apduBuffer[1] = (byte) secureChannel.SC_SECRET_LENGTH;
+      secureChannel.pairStep1(apduBuffer, (short) 2);
+
+    } else if ((apduBuffer[ISO7816.OFFSET_P1] == secureChannel.PAIR_P1_LAST_STEP) && (secureChannel.preassignedPairingOffset != -1)) {
+      secureChannel.pairStep2(apduBuffer);
+    } else {
+      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+    }
   }
 
   /**

@@ -9,7 +9,7 @@ import javacardx.crypto.Cipher;
  */
 public class SecureChannel {
   public static final short SC_KEY_LENGTH = 256;
-  public static final short SC_SECRET_LENGTH = 32;
+  public final short SC_SECRET_LENGTH = 32;
   public static final short PAIRING_KEY_LENGTH = SC_SECRET_LENGTH + 1;
   public static final short SC_BLOCK_SIZE = Crypto.AES_BLOCK_SIZE;
   public static final short SC_OUT_OFFSET = ISO7816.OFFSET_CDATA + (SC_BLOCK_SIZE * 2);
@@ -20,8 +20,8 @@ public class SecureChannel {
   public static final byte INS_PAIR = 0x12;
   public static final byte INS_UNPAIR = 0x13;
 
-  public static final byte PAIR_P1_FIRST_STEP = 0x00;
-  public static final byte PAIR_P1_LAST_STEP = 0x01;
+  public final byte PAIR_P1_FIRST_STEP = 0x00;
+  public final byte PAIR_P1_LAST_STEP = 0x01;
 
   // This is the maximum length acceptable for plaintext commands/responses for APDUs in short format
   public static final short SC_MAX_PLAIN_LENGTH = (short) 223;
@@ -41,7 +41,7 @@ public class SecureChannel {
    */
   private byte[] pairingKeys;
 
-  private short preassignedPairingOffset = -1;
+  public short preassignedPairingOffset = -1;
   private byte remainingSlots;
   private boolean mutuallyAuthenticated = false;
 
@@ -194,71 +194,18 @@ public class SecureChannel {
   }
 
   /**
-   * Processes the PAIR command.
-   *
-   * @param apdu the JCRE-owned APDU object.
-   */
-  public void pair(APDU apdu) {
-    if (isOpen()) {
-      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
-    }
-
-    byte[] apduBuffer = apdu.getBuffer();
-
-    if (apduBuffer[ISO7816.OFFSET_LC] != SC_SECRET_LENGTH) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
-
-    short len;
-
-    if (apduBuffer[ISO7816.OFFSET_P1] == PAIR_P1_FIRST_STEP) {
-      len = pairStep1(apduBuffer);
-    } else if ((apduBuffer[ISO7816.OFFSET_P1] == PAIR_P1_LAST_STEP) && (preassignedPairingOffset != -1)) {
-      len = pairStep2(apduBuffer);
-    } else {
-      ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
-      return;
-    }
-
-    apdu.setOutgoingAndSend((short) 0, len);
-  }
-
-  /**
-   * Performs the first step of pairing. In this step the card solves the challenge sent by the client, thus authenticating
-   * itself to the client. At the same time, it creates a challenge for the client. This can only fail if the card has
-   * already paired with the maximum allowed amount of clients.
+   * Performs the first step of pairing. Generates a random challenge and copies it to the first
+   * 32 bytes of the apduBuffer
    *
    * @param apduBuffer the APDU buffer
    * @return the length of the reply
    */
-  private short pairStep1(byte[] apduBuffer) {
-    // preassignedPairingOffset = -1;
-
-    // for (short i = 0; i < (short) pairingKeys.length; i += PAIRING_KEY_LENGTH) {
-      // if (pairingKeys[i] == 0) {
-        // preassignedPairingOffset = i;
-        // break;
-      // }
-    // }
-
-    // if (preassignedPairingOffset == -1) {
-      // ISOException.throwIt(ISO7816.SW_FILE_FULL);
-    // }
-
-    // GridPlus changes: We are going to overwrite the first pairing slot for all pairings.
-    // This prevents a scenario where the user cannot use the 6th Lattice interface their card
-    // connects to. There is no significant advantage to maintaining multiple pairing slots beside
-    // the overhead of making that pairing connection. We are happy to have the user make that pairing
-    // connection again each time they insert the card into a device.
+  public void pairStep1(byte[] apduBuffer, short off) {
     preassignedPairingOffset = 0;
 
-
-    crypto.sha256.update(pairingSecret, (short) 0, SC_SECRET_LENGTH);
-    crypto.sha256.doFinal(apduBuffer, ISO7816.OFFSET_CDATA, SC_SECRET_LENGTH, apduBuffer, (short) 0);
+    // Return a random 256-bit challenge
     crypto.random.generateData(secret, (short) 0, SC_SECRET_LENGTH);
-    Util.arrayCopyNonAtomic(secret, (short) 0, apduBuffer, SC_SECRET_LENGTH, SC_SECRET_LENGTH);
-
-    return (SC_SECRET_LENGTH * 2);
+    Util.arrayCopyNonAtomic(secret, (short) 0, apduBuffer, off, SC_SECRET_LENGTH);
   }
 
   /**
@@ -269,7 +216,7 @@ public class SecureChannel {
    * @param apduBuffer the APDU buffer
    * @return the length of the reply
    */
-  private short pairStep2(byte[] apduBuffer) {
+  public void pairStep2(byte[] apduBuffer) {
     crypto.sha256.update(pairingSecret, (short) 0, SC_SECRET_LENGTH);
     crypto.sha256.doFinal(secret, (short) 0, SC_SECRET_LENGTH, secret, (short) 0);
 
@@ -286,8 +233,6 @@ public class SecureChannel {
     apduBuffer[0] = (byte) (preassignedPairingOffset / PAIRING_KEY_LENGTH);
 
     preassignedPairingOffset = -1;
-
-    return (SC_SECRET_LENGTH + 1);
   }
 
   /**
