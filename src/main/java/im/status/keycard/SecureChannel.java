@@ -9,7 +9,7 @@ import javacardx.crypto.Cipher;
  */
 public class SecureChannel {
   public static final short SC_KEY_LENGTH = 256;
-  public final short SC_SECRET_LENGTH = 32;
+  public static final short SC_SECRET_LENGTH = 32;
   public static final short PAIRING_KEY_LENGTH = SC_SECRET_LENGTH + 1;
   public static final short SC_BLOCK_SIZE = Crypto.AES_BLOCK_SIZE;
   public static final short SC_OUT_OFFSET = ISO7816.OFFSET_CDATA + (SC_BLOCK_SIZE * 2);
@@ -30,7 +30,7 @@ public class SecureChannel {
   private AESKey scMacKey;
   private Signature scMac;
   private KeyPair scKeypair;
-  private byte[] secret;
+  public byte[] secret;
   private byte[] pairingSecret;
 
   private short scCounter;
