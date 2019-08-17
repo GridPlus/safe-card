@@ -135,6 +135,7 @@ public class KeycardApplet extends Applet {
   private ECPublicKey idPublic;
   private ECPrivateKey idPrivate;
   private ECPublicKey tmpPub;
+  private byte[] tmpHash;
 
   private byte[] masterSeed;
   private byte masterSeedFlag;
@@ -205,6 +206,7 @@ public class KeycardApplet extends Applet {
 
     cert = new byte[CERT_LEN];
     certLoaded = 0;
+    tmpHash = new byte[MessageDigest.LENGTH_SHA_256];
 
     masterSeed = new byte[BIP39_SEED_SIZE];
     masterSeedFlag = SFLAG_NONE;
@@ -818,6 +820,20 @@ public class KeycardApplet extends Applet {
   }
 
 
+  private void verifySignatureTemplate(byte[] buffer, short off) {
+    if (buffer[off] != TLV_SIGNATURE_TEMPLATE ||
+        buffer[(short) (off + 1)] != 0x81 ||
+        buffer[(short) (off + 3)] != TLV_PUB_KEY ||
+        buffer[(short) (off + 4)] != Crypto.KEY_PUB_SIZE) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    return;
+  }
+
+  private byte getSignatureLength(byte[] buffer, short off) {
+    return buffer[(short) (off + 2)];
+  }
+
   /**
    * Processes the LOAD_CERTS command. Copies the APDU buffer into `certs`.
    * This function expects a DER signature and may only be called once.
@@ -832,17 +848,28 @@ public class KeycardApplet extends Applet {
       ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
     }
 
+    // Parse the signature template
+    verifySignatureTemplate(apduBuffer, ISO7816.OFFSET_LC);
+    byte sigLen = getSignatureLength(apduBuffer, ISO7816.OFFSET_LC);
+    
     // Ensure the signature fits in the allocated buffer
     // DER signatures are between 70 and 72 bytes, as R and S components
     // are each either 32 or (rarely) 33 bytes
-    short len = (short) (apduBuffer[ISO7816.OFFSET_LC] & 0x00FF);
-    if (len > CERT_LEN || len < (short) (CERT_LEN - 2)) {
+    if (sigLen > CERT_LEN || sigLen < (short) (CERT_LEN - 2)) {
       ISOException.throwIt(ISO7816.SW_DATA_INVALID);
     }
-    
-    // Load the DER signature as a cert
+
+    short off = (short) (ISO7816.OFFSET_CDATA + 5);
     JCSystem.beginTransaction();
-    Util.arrayCopy(apduBuffer, (short) ISO7816.OFFSET_CDATA, cert, (short) 0, len);
+    // [TODO]Verify that the signature itself used the idPub as the preimage
+    // crypto.sha256.doFinal(,
+    
+    // Store the signing key
+    certSignerPub.setW(apduBuffer, off, Crypto.KEY_PUB_SIZE);
+    
+    // Copy the DER signature
+    Util.arrayCopy(apduBuffer, (short) (off + Crypto.KEY_PUB_SIZE), cert, (short) 0, sigLen);
+    
     // Prevent any future calls of this function
     certLoaded = 1;
     JCSystem.commitTransaction();
@@ -942,7 +969,6 @@ public class KeycardApplet extends Applet {
       // Put in the full length of the signature template
       apduBuffer[(short) (off + 2)] = (byte) (outLen - 3);
 
-      
       // Generate a card challenge 
       apduBuffer[0] = TLV_CHALLENGE;
       apduBuffer[1] = (byte) secureChannel.SC_SECRET_LENGTH;
@@ -956,28 +982,46 @@ public class KeycardApplet extends Applet {
       //------------------
       short off = ISO7816.OFFSET_LC;
       // Verify that we have a signature template
-      if (apduBuffer[off] != TLV_SIGNATURE_TEMPLATE ||
-          apduBuffer[(short) (off + 1)] != 0x81 ||
-          apduBuffer[(short) (off + 3)] != TLV_PUB_KEY ||
-          apduBuffer[(short) (off + 4)] != Crypto.KEY_PUB_SIZE) {
-        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-      }
+      verifySignatureTemplate(apduBuffer, off);
+      short sigLen1 = getSignatureLength(apduBuffer, off);
+
       // 1. Get the requester's public key
-      tmpPub.setW(apduBuffer, (short) (off + 5), Crypto.KEY_PUB_SIZE);
+      off += 5;
+      tmpPub.setW(apduBuffer, off, Crypto.KEY_PUB_SIZE);
+      // (Also load its hash into a temporary buffer)
+      crypto.sha256.doFinal(apduBuffer, 
+                            off, 
+                            Crypto.KEY_PUB_SIZE, 
+                            tmpHash, 
+                            (short) 0);
 
       // 2. Get the requester's sig and verify that it signed the pubkey
+      off += Crypto.KEY_PUB_SIZE;
       signature.init(tmpPub, Signature.MODE_VERIFY);
-      if (!signature.verify( secureChannel.secret, 
-                        (short) 0, 
-                        MessageDigest.LENGTH_SHA_256, 
-                        apduBuffer, 
-                        (short) 0,
-                        (short) apduBuffer[(short) (off + 2)])) {
+      if (!signature.verify(secureChannel.secret, 
+                            (short) 0, 
+                            MessageDigest.LENGTH_SHA_256, 
+                            apduBuffer, 
+                            off,
+                            sigLen1)) {
         ISOException.throwIt(ISO7816.SW_DATA_INVALID);
       }
 
       // 3. Verify cert using pubkey as preimage and certPub (set when certs are loaded)
-      //    as the signer
+      //    as the signer      
+      signature.init(certSignerPub, Signature.MODE_VERIFY);
+      // Note that the cert is just a DER signature, NOT a signature template
+      // TODO need to get signature length from the DER itself
+      // is that the first byte?
+      // off += sigLen1;
+      // short sigLen2 =
+      // if (!signature.verify(tmpHash,
+      //                       (short) 0,
+      //                       MessageDigest.LENGTH_SHA_256,
+      //                       apduBuffer,
+      //                       off,
+
+      // ))
 
       // 4. Call pairStep2 to get the pairing salt and return buffer
       secureChannel.pairStep2(apduBuffer);
