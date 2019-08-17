@@ -209,22 +209,15 @@ public class SecureChannel {
   }
 
   /**
-   * Performs the last step of pairing. In this step the card verifies that the client has correctly solved its
-   * challenge, authenticating it. It then proceeds to generate the pairing key and returns to the client the data
+   * Generate the pairing key and return to the client the data
    * necessary to further establish a secure channel session.
+   * At this point, the card has already validated the client signature and
+   * certificate.
    *
    * @param apduBuffer the APDU buffer
    * @return the length of the reply
    */
   public void pairStep2(byte[] apduBuffer) {
-    crypto.sha256.update(pairingSecret, (short) 0, SC_SECRET_LENGTH);
-    crypto.sha256.doFinal(secret, (short) 0, SC_SECRET_LENGTH, secret, (short) 0);
-
-    if (Util.arrayCompare(apduBuffer, ISO7816.OFFSET_CDATA, secret, (short) 0, SC_SECRET_LENGTH) != 0) {
-      preassignedPairingOffset = -1;
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
-    }
-
     crypto.random.generateData(apduBuffer, (short) 1, SC_SECRET_LENGTH);
     crypto.sha256.update(pairingSecret, (short) 0, SC_SECRET_LENGTH);
     crypto.sha256.doFinal(apduBuffer, (short) 1, SC_SECRET_LENGTH, pairingKeys, (short) (preassignedPairingOffset + 1));

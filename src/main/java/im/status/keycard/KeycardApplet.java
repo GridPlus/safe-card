@@ -28,7 +28,6 @@ public class KeycardApplet extends Applet {
   static final byte INS_SET_PINLESS_PATH = (byte) 0xC1;
   static final byte INS_EXPORT_KEY = (byte) 0xC2;
   static final byte INS_EXPORT_SEED = (byte) 0xC3;
-  static final byte INS_AUTHENTICATE = (byte) 0xEE;
 
   static final short SW_REFERENCED_DATA_NOT_FOUND = (short) 0x6A88;
 
@@ -284,13 +283,6 @@ public class KeycardApplet extends Applet {
     // so we should check it here
     if (code == INS_EXPORT_CERT) {
       exportCerts(apdu);
-      return;
-    }
-
-    // We can request an authentication signature to validate the certs
-    // at any time
-    if (code == INS_AUTHENTICATE) {
-      authenticate(apdu);
       return;
     }
 
@@ -890,36 +882,6 @@ public class KeycardApplet extends Applet {
     apdu.setOutgoingAndSend((short) 0, off);
   }
 
-  private void authenticate(APDU apdu) {
-    byte[] apduBuffer = apdu.getBuffer();
-    apdu.setIncomingAndReceive();
-
-    // Ensure a 32-byte hash was passed
-    if (apduBuffer[ISO7816.OFFSET_LC] != MessageDigest.LENGTH_SHA_256) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
-    }
-
-    // Init the tmpSig with the private id key
-    signature.init(idPrivate, Signature.MODE_SIGN);
-
-    // Start a signature template. This logic is meant to be very similar to that in `sign()`
-    short outLen = (short) (5 + Crypto.KEY_PUB_SIZE);
-    // First make the signature and hash. This allows us to sign the correct data before overwriting apduBuffer
-    outLen += signature.signPreComputedHash(apduBuffer, (short) ISO7816.OFFSET_CDATA, MessageDigest.LENGTH_SHA_256, apduBuffer, outLen);
-    outLen += crypto.fixS(apduBuffer, outLen);
-
-    // Backfill the first part of apduBuffer
-    apduBuffer[0] = TLV_SIGNATURE_TEMPLATE;
-    apduBuffer[1] = (byte) 0x81;
-    apduBuffer[2] = (byte) (outLen - 3);
-    // Add public key for verification
-    apduBuffer[3] = TLV_PUB_KEY;
-    apduBuffer[4] = (byte) Crypto.KEY_PUB_SIZE;
-    idPublic.getW(apduBuffer, (short) 5);
-
-    apdu.setOutgoingAndSend((short) 0, (short) outLen);    
-  }
-
   private void pair(APDU apdu) {
     byte[] apduBuffer = apdu.getBuffer();
     if (apduBuffer[ISO7816.OFFSET_LC] != secureChannel.SC_SECRET_LENGTH) {
@@ -971,7 +933,7 @@ public class KeycardApplet extends Applet {
 
       // Generate a card challenge 
       apduBuffer[0] = TLV_CHALLENGE;
-      apduBuffer[1] = (byte) secureChannel.SC_SECRET_LENGTH;
+      apduBuffer[1] = (byte) SecureChannel.SC_SECRET_LENGTH;
       secureChannel.pairStep1(apduBuffer, (short) 2);
 
       // Specify the payload length
@@ -1004,24 +966,25 @@ public class KeycardApplet extends Applet {
                             apduBuffer, 
                             off,
                             sigLen1)) {
-        ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
       }
 
       // 3. Verify cert using pubkey as preimage and certPub (set when certs are loaded)
       //    as the signer      
       signature.init(certSignerPub, Signature.MODE_VERIFY);
-      // Note that the cert is just a DER signature, NOT a signature template
-      // TODO need to get signature length from the DER itself
-      // is that the first byte?
-      // off += sigLen1;
-      // short sigLen2 =
-      // if (!signature.verify(tmpHash,
-      //                       (short) 0,
-      //                       MessageDigest.LENGTH_SHA_256,
-      //                       apduBuffer,
-      //                       off,
-
-      // ))
+      off += sigLen1;
+      verifySignatureTemplate(apduBuffer, off);
+      short sigLen2 = getSignatureLength(apduBuffer, off);
+      // Skip template header + pubkey and go straight to signature
+      off += (short) (5 + Crypto.KEY_PUB_SIZE);
+      if (!signature.verify(tmpHash,
+                            (short) 0,
+                            MessageDigest.LENGTH_SHA_256,
+                            apduBuffer,
+                            off,
+                            sigLen2)) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
 
       // 4. Call pairStep2 to get the pairing salt and return buffer
       secureChannel.pairStep2(apduBuffer);
