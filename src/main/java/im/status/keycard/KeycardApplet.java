@@ -282,7 +282,7 @@ public class KeycardApplet extends Applet {
     // Cert reading can happen either at init or before it,
     // so we should check it here
     if (code == INS_EXPORT_CERT) {
-      exportCerts(apdu);
+      exportCert(apdu);
       return;
     }
 
@@ -827,7 +827,7 @@ public class KeycardApplet extends Applet {
   }
 
   /**
-   * Processes the LOAD_CERTS command. Copies the APDU buffer into `certs`.
+   * Processes the LOAD_CERT command. Copies the APDU buffer into `certs`.
    * This function expects a DER signature and may only be called once.
    * @param apdu the JCRE-owned APDU object.
    */
@@ -853,14 +853,33 @@ public class KeycardApplet extends Applet {
 
     short off = (short) (ISO7816.OFFSET_CDATA + 5);
     JCSystem.beginTransaction();
-    // [TODO]Verify that the signature itself used the idPub as the preimage
-    // crypto.sha256.doFinal(,
-    
+
     // Store the signing key
     certSignerPub.setW(apduBuffer, off, Crypto.KEY_PUB_SIZE);
+    off += Crypto.KEY_PUB_SIZE;
+
+    // Copy our idPub to a hash buffer so we can verify this cert
+    // Copy it to the end of the apduBuffer so we don't have to create
+    // a new, one-time-use buffer
+    idPublic.getW(apduBuffer, (short) (off + sigLen));
+    // Hash the idPub bytes
+    crypto.sha256.doFinal(apduBuffer, 
+                          (short) (off + sigLen), 
+                          Crypto.KEY_PUB_SIZE, 
+                          tmpHash, 
+                          (short) 0);
+    // Verify the cert
+    if (!signature.verify(tmpHash, 
+                          (short) 0, 
+                          MessageDigest.LENGTH_SHA_256, 
+                          apduBuffer, 
+                          off,
+                          sigLen)) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
     
     // Copy the DER signature
-    Util.arrayCopy(apduBuffer, (short) (off + Crypto.KEY_PUB_SIZE), cert, (short) 0, sigLen);
+    Util.arrayCopy(apduBuffer, off, cert, (short) 0, sigLen);
     
     // Prevent any future calls of this function
     certLoaded = 1;
@@ -872,7 +891,7 @@ public class KeycardApplet extends Applet {
    * Exports the certs stored in `certs`. This exports the entire byte array, even if some of it is empty.
    * @param apdu the JCRE-owned APDU object.
    */
-  private void exportCerts(APDU apdu) {
+  private void exportCert(APDU apdu) {
     byte[] apduBuffer = apdu.getBuffer();
     short off = 0;
     apduBuffer[off] = TLV_CERT; off++;
