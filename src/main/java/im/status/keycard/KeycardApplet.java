@@ -903,13 +903,13 @@ public class KeycardApplet extends Applet {
 
   private void pair(APDU apdu) {
     byte[] apduBuffer = apdu.getBuffer();
-    if (apduBuffer[ISO7816.OFFSET_LC] != secureChannel.SC_SECRET_LENGTH) {
+    if (apduBuffer[ISO7816.OFFSET_LC] != SecureChannel.SC_SECRET_LENGTH) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
 
     short len = 0;
 
-    if (apduBuffer[ISO7816.OFFSET_P1] == secureChannel.PAIR_P1_FIRST_STEP) {
+    if (apduBuffer[ISO7816.OFFSET_P1] == SecureChannel.PAIR_P1_FIRST_STEP) {
       //------------------
       // FIRST STEP
       //------------------
@@ -957,7 +957,7 @@ public class KeycardApplet extends Applet {
 
       // Specify the payload length
       len = (short) (off + outLen);
-    } else if ((apduBuffer[ISO7816.OFFSET_P1] == secureChannel.PAIR_P1_LAST_STEP) && (secureChannel.preassignedPairingOffset != -1)) {
+    } else if ((apduBuffer[ISO7816.OFFSET_P1] == SecureChannel.PAIR_P1_LAST_STEP) && (secureChannel.preassignedPairingOffset != -1)) {
       //------------------
       // SECOND STEP
       //------------------

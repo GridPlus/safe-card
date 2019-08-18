@@ -20,8 +20,8 @@ public class SecureChannel {
   public static final byte INS_PAIR = 0x12;
   public static final byte INS_UNPAIR = 0x13;
 
-  public final byte PAIR_P1_FIRST_STEP = 0x00;
-  public final byte PAIR_P1_LAST_STEP = 0x01;
+  public static final byte PAIR_P1_FIRST_STEP = 0x00;
+  public static final byte PAIR_P1_LAST_STEP = 0x01;
 
   // This is the maximum length acceptable for plaintext commands/responses for APDUs in short format
   public static final short SC_MAX_PLAIN_LENGTH = (short) 223;
