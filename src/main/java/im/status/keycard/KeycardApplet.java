@@ -814,7 +814,7 @@ public class KeycardApplet extends Applet {
 
   private void verifySignatureTemplate(byte[] buffer, short off) {
     if (buffer[off] != TLV_SIGNATURE_TEMPLATE ||
-        buffer[(short) (off + 1)] != 0x81 ||
+        buffer[(short) (off + 1)] != (byte) 0x81 ||
         buffer[(short) (off + 3)] != TLV_PUB_KEY ||
         buffer[(short) (off + 4)] != Crypto.KEY_PUB_SIZE) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
@@ -841,41 +841,38 @@ public class KeycardApplet extends Applet {
     }
 
     // Parse the signature template
-    verifySignatureTemplate(apduBuffer, ISO7816.OFFSET_LC);
-    byte sigLen = getSignatureLength(apduBuffer, ISO7816.OFFSET_LC);
-    
+    short off = ISO7816.OFFSET_CDATA;
+    verifySignatureTemplate(apduBuffer, off);
+    byte sigLen = getSignatureLength(apduBuffer, off);
+ 
     // Ensure the signature fits in the allocated buffer
     // DER signatures are between 70 and 72 bytes, as R and S components
     // are each either 32 or (rarely) 33 bytes
-    if (sigLen > CERT_LEN || sigLen < (short) (CERT_LEN - 2)) {
-      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    if ((short) sigLen > CERT_LEN || (short) sigLen < (short) (CERT_LEN - 2)) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
 
-    short off = (short) (ISO7816.OFFSET_CDATA + 5);
+    off += 5;
     JCSystem.beginTransaction();
 
     // Store the signing key
     certSignerPub.setW(apduBuffer, off, Crypto.KEY_PUB_SIZE);
+    secp256k1.setCurveParameters(certSignerPub);
     off += Crypto.KEY_PUB_SIZE;
 
     // Copy our idPub to a hash buffer so we can verify this cert
     // Copy it to the end of the apduBuffer so we don't have to create
     // a new, one-time-use buffer
     idPublic.getW(apduBuffer, (short) (off + sigLen));
-    // Hash the idPub bytes
-    crypto.sha256.doFinal(apduBuffer, 
-                          (short) (off + sigLen), 
-                          Crypto.KEY_PUB_SIZE, 
-                          tmpHash, 
-                          (short) 0);
-    // Verify the cert
-    if (!signature.verify(tmpHash, 
-                          (short) 0, 
-                          MessageDigest.LENGTH_SHA_256, 
-                          apduBuffer, 
-                          off,
-                          sigLen)) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    
+    signature.init(certSignerPub, Signature.MODE_VERIFY);
+    if (!signature.verify(apduBuffer, 
+                        (short) (off + sigLen), 
+                        Crypto.KEY_PUB_SIZE, 
+                        apduBuffer, 
+                        off,
+                        sigLen)) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
     
     // Copy the DER signature
@@ -884,6 +881,7 @@ public class KeycardApplet extends Applet {
     // Prevent any future calls of this function
     certLoaded = 1;
     JCSystem.commitTransaction();
+    apdu.setOutgoingAndSend((short) 0, (short) (off + sigLen + 65));
   } 
 
   /**
@@ -921,42 +919,41 @@ public class KeycardApplet extends Applet {
       // Offset based on the data we will get back from pairStep1 (i.e. the cardChallenge  + TLV bytes)
       short off = (short) MessageDigest.LENGTH_SHA_256 + 2;
 
+      // 0. Sign the challenge and set it in the apduBuffer. We need to do this first in order
+      // to sign the data that has been passed into this APDU
+      short futureSigOff = (short) (off + cert.length + 5 + Crypto.KEY_PUB_SIZE);
+      signature.init(idPrivate, Signature.MODE_SIGN);
+      short sigLen = signature.signPreComputedHash(apduBuffer, 
+                                                  (short) ISO7816.OFFSET_CDATA,
+                                                  (short) MessageDigest.LENGTH_SHA_256, 
+                                                  apduBuffer,
+                                                  futureSigOff);
+      sigLen += crypto.fixS(apduBuffer, futureSigOff);
+
       // 1. Load the cert
+      apduBuffer[off] = TLV_CERT; off++;
+      apduBuffer[off] = (byte) cert.length; off++;
       Util.arrayCopy(cert, (short) 0, apduBuffer, (short) off, (short) cert.length);
       off += cert.length;
 
       // 2. Build a signature template
-      apduBuffer[off] = TLV_SIGNATURE_TEMPLATE;
-      apduBuffer[(short) (off + 1)] = (byte) 0x81;
-      apduBuffer[(short) (off + 3)] = TLV_PUB_KEY;
-      short outLen = apduBuffer[(short) (off + 4)] = Crypto.KEY_PUB_SIZE;
+      apduBuffer[off] = TLV_SIGNATURE_TEMPLATE; off++;
+      apduBuffer[off] = (byte) 0x81; off++;
+      apduBuffer[off] = (byte) sigLen; off++;
+      apduBuffer[off] = TLV_PUB_KEY; off++;
+      apduBuffer[off] = Crypto.KEY_PUB_SIZE; off++;
 
       // Copy the card's pubkey into the apduBuffer
-      idPublic.getW(apduBuffer, (short) (off + 5));
+      idPublic.getW(apduBuffer, off);
+      off += Crypto.KEY_PUB_SIZE;
       
-      // Setup for signature
-      outLen += 5;
-      short sigOff = (short) (outLen + off);
-      
-      // Sign the challenge and set it in the apduBuffer after the pairing data
-      // (the pairing data will be 64 bytes)
-      signature.init(idPrivate, Signature.MODE_SIGN);
-      outLen += signature.signPreComputedHash(apduBuffer, 
-                                              (short) ISO7816.OFFSET_CDATA,   // Shit, this may actually get overwritten [TODO figure this out]
-                                              (short) MessageDigest.LENGTH_SHA_256, 
-                                              apduBuffer,
-                                              off);
-      outLen += crypto.fixS(apduBuffer, sigOff);
-      // Put in the full length of the signature template
-      apduBuffer[(short) (off + 2)] = (byte) (outLen - 3);
-
       // Generate a card challenge 
       apduBuffer[0] = TLV_CHALLENGE;
       apduBuffer[1] = (byte) SecureChannel.SC_SECRET_LENGTH;
       secureChannel.pairStep1(apduBuffer, (short) 2);
 
       // Specify the payload length
-      len = (short) (off + outLen);
+      len = (short) (off + sigLen);
     } else if ((apduBuffer[ISO7816.OFFSET_P1] == SecureChannel.PAIR_P1_LAST_STEP) && (secureChannel.preassignedPairingOffset != -1)) {
       //------------------
       // SECOND STEP

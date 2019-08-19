@@ -45,8 +45,9 @@ import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.security.*;
-
+import java.security.interfaces.ECPrivateKey;
 import java.security.spec.InvalidKeySpecException;
+import java.security.spec.ECGenParameterSpec;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Random;
@@ -61,6 +62,9 @@ public class KeycardTest {
   private static CardChannel apduChannel;
   private static im.status.keycard.io.CardChannel sdkChannel;
   private static CardSimulator simulator;
+  private static ECPrivateKey signerPriv;
+  private static ECPublicKey signerPub;
+  private static Signature sig;
 
   private static LedgerUSBManager usbManager;
 
@@ -189,6 +193,38 @@ public class KeycardTest {
     }
   }
 
+  // private static void securePair() {
+    // First step -- send random data to be signed
+  // }
+
+  private byte[] pubKeyFromSigTemplate(byte[] data, short off) {
+    assertEquals(KeycardApplet.TLV_SIGNATURE_TEMPLATE, data[off]);
+    assertEquals((byte) 0x81, data[(short) (off + 1)]);
+    assertEquals(KeycardApplet.TLV_PUB_KEY, data[(short) (off + 3)]);
+    short end = (short) (off + 5 + data[(short) (off + 4)]);
+    return Arrays.copyOfRange(data, (short) (off + 5), end);
+  }
+
+  private byte[] buildSigTemplate(byte[] sigBytes, ECPublicKey signer) {
+    byte[] pubBytes = signerPub.getQ().getEncoded(false);
+    byte[] template = new byte[5 + sigBytes.length + pubBytes.length];
+    template[0] = KeycardApplet.TLV_SIGNATURE_TEMPLATE;
+    template[1] = (byte) 0x81;
+    template[2] = (byte) sigBytes.length;
+    template[3] = KeycardApplet.TLV_PUB_KEY;
+    template[4] = (byte) pubBytes.length;
+    short off = 5;
+    for (short i = 0; i < pubBytes.length; i++) {
+      template[off] = pubBytes[i];
+      off++;
+    }
+    for (short i = 0; i < sigBytes.length; i++) {
+      template[off] = sigBytes[i];
+      off++;
+    }
+    return template;
+  }
+
   @BeforeEach
   void init() throws Exception {
     reset();
@@ -197,23 +233,64 @@ public class KeycardTest {
     cmdSet.setSecureChannel(secureChannel);
     cmdSet.select().checkOK();
 
-    if (cmdSet.getApplicationInfo().hasSecureChannelCapability()) {
-      cmdSet.autoPair(sharedSecret);
-    }
+    // 0. Setup the cert signer
+    //-----------------------------------
+    ECGenParameterSpec ecGenSpec = new ECGenParameterSpec("secp256k1");
+    KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("ECDSA", "BC");
+    keyPairGenerator.initialize(ecGenSpec, new SecureRandom());
+    KeyPair pair = keyPairGenerator.generateKeyPair();
+    signerPub = (ECPublicKey) pair.getPublic();
+    signerPriv = (ECPrivateKey) pair.getPrivate();
+
+    // 1. Load the cert
+    //-----------------------------------
+    Random random = new Random();
+    byte[] challenge = new byte[32];
+    random.nextBytes(challenge);
+    APDUResponse response = cmdSet.pair(SecureChannel.PAIR_P1_FIRST_STEP, challenge);
+    byte[] data = response.getData();
+    assertEquals(0x9000, response.getSw());
+
+    // 1A. Get the public key from the response
+    // Start the offset at the signature template (skip the 32 byte challenge and X byte
+    // DER cert, which hasn't been loaded yet, so it should be all zeros)
+    byte off = (byte) 1;
+    off += (byte) data[off] + 2;
+    off += (short) (data[off] + 1);
+    byte[] pubKeyBytes = pubKeyFromSigTemplate(data, (short) off);
+
+    // 1B. Sign the pubkey
+    Signature signature = Signature.getInstance("SHA256withECDSA", "BC");
+    signature.initSign(signerPriv);
+    signature.update(pubKeyBytes, 0, 65);
+    byte[] sigBytes = signature.sign();
+
+    // 1C. Build the template
+    byte[] cert = buildSigTemplate(sigBytes, signerPub);
+    response = cmdSet.loadCerts(cert);
+    assertEquals(0x9000, response.getSw());
+
+    // 2. Pair
+    //-----------------------------------
+
+
+    // if (cmdSet.getApplicationInfo().hasSecureChannelCapability()) {
+      // cmdSet.autoPair(sharedSecret);
+    // }
   }
 
   @AfterEach
   void tearDown() throws Exception {
-    resetAndSelectAndOpenSC();
+    // resetAndSelectAndOpenSC();
 
-    if (cmdSet.getApplicationInfo().hasCredentialsManagementCapability()) {
-      APDUResponse response = cmdSet.verifyPIN("000000");
-      assertEquals(0x9000, response.getSw());
-    }
+    // if (cmdSet.getApplicationInfo().hasCredentialsManagementCapability()) {
+    //   APDUResponse response = cmdSet.verifyPIN("000000");
+    //   assertEquals(0x9000, response.getSw());
+    // }
 
-    if (cmdSet.getApplicationInfo().hasSecureChannelCapability()) {
-      cmdSet.autoUnpair();
-    }
+    // if (cmdSet.getApplicationInfo().hasSecureChannelCapability()) {
+    //   cmdSet.autoUnpair();
+    // }
   }
 
   @AfterAll
@@ -232,7 +309,7 @@ public class KeycardTest {
 
     assertTrue(new ApplicationInfo(data).isInitializedCard());
   }
-
+/*
   @Test
   @DisplayName("OPEN SECURE CHANNEL command")
   @Capabilities("secureChannel")
@@ -1463,11 +1540,11 @@ public class KeycardTest {
 
     assertFalse(ethSendTransaction.hasError());
   }
-
+*/
   //====================================
   // GRIDPLUS SAFECARD TESTS
   //====================================
-
+/*
   @Test
   @DisplayName("Authentication")
   void authTest() throws Exception {
@@ -1511,7 +1588,8 @@ public class KeycardTest {
     tmpSig.update(preImage);
     assertTrue(tmpSig.verify(sig));
   }
-
+*/
+/*
   @Test
   @DisplayName("Certs")
   void loadCertsTest() throws Exception {
@@ -1551,7 +1629,8 @@ public class KeycardTest {
     response = cmdSet.loadCerts(cert);
     assertEquals(0x6986, response.getSw());
   }
-
+*/
+/*
   @Test
   @DisplayName("Master Seeds")
   void masterSeedsTest() throws Exception {
@@ -1934,7 +2013,7 @@ public class KeycardTest {
     System.out.println("Time to switch m/44'/60'/0'/0/0': " + deriveParentHardened);
     System.out.println("Time to switch back to m/44'/60'/0'/0/0: " + deriveParent);
   }
-  
+*/  
 
   private KeyPairGenerator keypairGenerator() throws Exception {
     ECParameterSpec ecSpec = ECNamedCurveTable.getParameterSpec("secp256k1");
@@ -1974,7 +2053,7 @@ public class KeycardTest {
     if (cmdSet.getApplicationInfo().hasSecureChannelCapability()) {
       reset();
       cmdSet.select();
-      cmdSet.autoOpenSecureChannel();
+      // cmdSet.autoOpenSecureChannel();
     }
   }
 
