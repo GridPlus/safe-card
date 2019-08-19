@@ -817,7 +817,8 @@ public class KeycardApplet extends Applet {
         buffer[(short) (off + 1)] != (byte) 0x81 ||
         buffer[(short) (off + 3)] != TLV_PUB_KEY ||
         buffer[(short) (off + 4)] != Crypto.KEY_PUB_SIZE) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      // ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      ISOException.throwIt((short) (10000 + buffer[off]));
     }
     return;
   }
@@ -901,10 +902,6 @@ public class KeycardApplet extends Applet {
 
   private void pair(APDU apdu) {
     byte[] apduBuffer = apdu.getBuffer();
-    if (apduBuffer[ISO7816.OFFSET_LC] != SecureChannel.SC_SECRET_LENGTH) {
-      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-    }
-
     short len = 0;
 
     if (apduBuffer[ISO7816.OFFSET_P1] == SecureChannel.PAIR_P1_FIRST_STEP) {
@@ -958,52 +955,56 @@ public class KeycardApplet extends Applet {
       //------------------
       // SECOND STEP
       //------------------
-      short off = ISO7816.OFFSET_LC;
+      short off = ISO7816.OFFSET_CDATA;
       // Verify that we have a signature template
       verifySignatureTemplate(apduBuffer, off);
-      short sigLen1 = getSignatureLength(apduBuffer, off);
+      short sigLen = getSignatureLength(apduBuffer, off);
 
       // 1. Get the requester's public key
       off += 5;
       tmpPub.setW(apduBuffer, off, Crypto.KEY_PUB_SIZE);
-      // (Also load its hash into a temporary buffer)
-      crypto.sha256.doFinal(apduBuffer, 
-                            off, 
-                            Crypto.KEY_PUB_SIZE, 
-                            tmpHash, 
-                            (short) 0);
-
-      // 2. Get the requester's sig and verify that it signed the pubkey
+      secp256k1.setCurveParameters(tmpPub);
       off += Crypto.KEY_PUB_SIZE;
+
+      // 2. Get the requester's sig and verify that it signed the card challenge
       signature.init(tmpPub, Signature.MODE_VERIFY);
       if (!signature.verify(secureChannel.secret, 
                             (short) 0, 
                             MessageDigest.LENGTH_SHA_256, 
                             apduBuffer, 
                             off,
-                            sigLen1)) {
-        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+                            sigLen)) {
+        ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
       }
+      off += sigLen;
 
       // 3. Verify cert using pubkey as preimage and certPub (set when certs are loaded)
       //    as the signer      
+      if (apduBuffer[off] != TLV_CERT) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
+
       signature.init(certSignerPub, Signature.MODE_VERIFY);
-      off += sigLen1;
-      verifySignatureTemplate(apduBuffer, off);
-      short sigLen2 = getSignatureLength(apduBuffer, off);
-      // Skip template header + pubkey and go straight to signature
-      off += (short) (5 + Crypto.KEY_PUB_SIZE);
-      if (!signature.verify(tmpHash,
-                            (short) 0,
-                            MessageDigest.LENGTH_SHA_256,
+      short certLen = (short) apduBuffer[(short) (off + 1)];
+      off += 2;
+
+      // Verify the cert signature. It should be made on this idPub. We have already consumed
+      // the first part of the apduBuffer, so we can stick this buffer at the front to avoid
+      // creating a new one
+      short idPubLoc = (short) 0;
+      idPublic.getW(apduBuffer, idPubLoc);
+      if (!signature.verify(apduBuffer,
+                            idPubLoc,
+                            Crypto.KEY_PUB_SIZE,
                             apduBuffer,
                             off,
-                            sigLen2)) {
-        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+                            certLen)) {
+        ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
       }
 
       // 4. Call pairStep2 to get the pairing salt and return buffer
       secureChannel.pairStep2(apduBuffer);
+      len = (short) (1 + SecureChannel.SC_SECRET_LENGTH);
     } else {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
     }

@@ -64,6 +64,8 @@ public class KeycardTest {
   private static CardSimulator simulator;
   private static ECPrivateKey signerPriv;
   private static ECPublicKey signerPub;
+  private static ECPrivateKey latticePriv;
+  private static ECPublicKey latticePub;
   private static Signature sig;
 
   private static LedgerUSBManager usbManager;
@@ -206,7 +208,7 @@ public class KeycardTest {
   }
 
   private byte[] buildSigTemplate(byte[] sigBytes, ECPublicKey signer) {
-    byte[] pubBytes = signerPub.getQ().getEncoded(false);
+    byte[] pubBytes = signer.getQ().getEncoded(false);
     byte[] template = new byte[5 + sigBytes.length + pubBytes.length];
     template[0] = KeycardApplet.TLV_SIGNATURE_TEMPLATE;
     template[1] = (byte) 0x81;
@@ -225,6 +227,18 @@ public class KeycardTest {
     return template;
   }
 
+  private byte[] concat(byte[] a, byte[] b) {
+    byte[] c = new byte[a.length + b.length];
+    for (short i = 0; i < c.length; i++) {
+      if (i < a.length) {
+        c[i] = a[i];
+      } else {
+        c[i] = b[i - a.length];
+      }
+    }
+    return c;
+  }
+
   @BeforeEach
   void init() throws Exception {
     reset();
@@ -241,8 +255,14 @@ public class KeycardTest {
     KeyPair pair = keyPairGenerator.generateKeyPair();
     signerPub = (ECPublicKey) pair.getPublic();
     signerPriv = (ECPrivateKey) pair.getPrivate();
+    // Also the Lattice key (to be certified)
+    KeyPair latticePair = keyPairGenerator.generateKeyPair();
+    latticePub = (ECPublicKey) latticePair.getPublic();
+    latticePriv = (ECPrivateKey) latticePair.getPrivate();
 
     // 1. Load the cert
+    //    First we need to get the idPub from the card using pair step 1
+    //    This will return an empty cert (because we haven't loaded one)
     //-----------------------------------
     Random random = new Random();
     byte[] challenge = new byte[32];
@@ -257,12 +277,12 @@ public class KeycardTest {
     byte off = (byte) 1;
     off += (byte) data[off] + 2;
     off += (short) (data[off] + 1);
-    byte[] pubKeyBytes = pubKeyFromSigTemplate(data, (short) off);
+    byte[] cardPubKeyBytes = pubKeyFromSigTemplate(data, (short) off);
 
     // 1B. Sign the pubkey
     Signature signature = Signature.getInstance("SHA256withECDSA", "BC");
     signature.initSign(signerPriv);
-    signature.update(pubKeyBytes, 0, 65);
+    signature.update(cardPubKeyBytes, 0, 65);
     byte[] sigBytes = signature.sign();
 
     // 1C. Build the template
@@ -271,7 +291,35 @@ public class KeycardTest {
     assertEquals(0x9000, response.getSw());
 
     // 2. Pair
+    //    We will call pair step 1 a second time (mostly just for
+    //    logical simplicity). This will generate a new card challenge
+    //    which we need to sign for step 2
     //-----------------------------------
+    response = cmdSet.pair(SecureChannel.PAIR_P1_FIRST_STEP, challenge);
+    data = response.getData();
+    assertEquals(0x9000, response.getSw());
+    assertEquals(KeycardApplet.TLV_CHALLENGE, data[0]);
+    assertEquals(32, data[1]);
+    // Ensure a cert was loaded [TODO]
+    
+    // 2A. First sign the card challenge with the Lattice key
+    signature.initSign(latticePriv);
+    byte[] toSign = Arrays.copyOfRange(data, 2, 34);
+    signature.update(toSign, 0, 32);
+    sigBytes = signature.sign();
+    byte[] latticeSigTemplate = buildSigTemplate(sigBytes, latticePub);
+
+    // 2B. Sign the card's idPub with the cert signer
+    signature.initSign(signerPriv);
+    signature.update(cardPubKeyBytes, 0, cardPubKeyBytes.length);
+    sigBytes = signature.sign();
+
+    byte[] certHeader = { KeycardApplet.TLV_CERT, (byte) sigBytes.length };
+    byte[] pair2Data = concat(latticeSigTemplate, certHeader);
+    pair2Data = concat(pair2Data, sigBytes);
+
+    response = cmdSet.pair(SecureChannel.PAIR_P1_LAST_STEP, pair2Data);
+    assertEquals(0x9000, response.getSw());
 
 
     // if (cmdSet.getApplicationInfo().hasSecureChannelCapability()) {
