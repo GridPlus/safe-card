@@ -817,8 +817,7 @@ public class KeycardApplet extends Applet {
         buffer[(short) (off + 1)] != (byte) 0x81 ||
         buffer[(short) (off + 3)] != TLV_PUB_KEY ||
         buffer[(short) (off + 4)] != Crypto.KEY_PUB_SIZE) {
-      // ISOException.throwIt(ISO7816.SW_WRONG_DATA);
-      ISOException.throwIt((short) (10000 + buffer[off]));
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     return;
   }

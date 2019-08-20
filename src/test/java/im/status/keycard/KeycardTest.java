@@ -67,6 +67,7 @@ public class KeycardTest {
   private static ECPrivateKey latticePriv;
   private static ECPublicKey latticePub;
   private static Signature sig;
+  private static byte[] cardPubKeyBytes;
 
   private static LedgerUSBManager usbManager;
 
@@ -112,6 +113,19 @@ public class KeycardTest {
       default:
         throw new IllegalStateException("Unknown target");
     }
+
+    // 0. Setup the cert signer
+    //-----------------------------------
+    ECGenParameterSpec ecGenSpec = new ECGenParameterSpec("secp256k1");
+    KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("ECDSA", "BC");
+    keyPairGenerator.initialize(ecGenSpec, new SecureRandom());
+    KeyPair pair = keyPairGenerator.generateKeyPair();
+    signerPub = (ECPublicKey) pair.getPublic();
+    signerPriv = (ECPrivateKey) pair.getPrivate();
+    // Also the Lattice key (to be certified)
+    KeyPair latticePair = keyPairGenerator.generateKeyPair();
+    latticePub = (ECPublicKey) latticePair.getPublic();
+    latticePriv = (ECPrivateKey) latticePair.getPrivate();
 
     initIfNeeded();
   }
@@ -195,10 +209,6 @@ public class KeycardTest {
     }
   }
 
-  // private static void securePair() {
-    // First step -- send random data to be signed
-  // }
-
   private byte[] pubKeyFromSigTemplate(byte[] data, short off) {
     assertEquals(KeycardApplet.TLV_SIGNATURE_TEMPLATE, data[off]);
     assertEquals((byte) 0x81, data[(short) (off + 1)]);
@@ -247,48 +257,46 @@ public class KeycardTest {
     cmdSet.setSecureChannel(secureChannel);
     cmdSet.select().checkOK();
 
-    // 0. Setup the cert signer
-    //-----------------------------------
-    ECGenParameterSpec ecGenSpec = new ECGenParameterSpec("secp256k1");
-    KeyPairGenerator keyPairGenerator = KeyPairGenerator.getInstance("ECDSA", "BC");
-    keyPairGenerator.initialize(ecGenSpec, new SecureRandom());
-    KeyPair pair = keyPairGenerator.generateKeyPair();
-    signerPub = (ECPublicKey) pair.getPublic();
-    signerPriv = (ECPrivateKey) pair.getPrivate();
-    // Also the Lattice key (to be certified)
-    KeyPair latticePair = keyPairGenerator.generateKeyPair();
-    latticePub = (ECPublicKey) latticePair.getPublic();
-    latticePriv = (ECPrivateKey) latticePair.getPrivate();
-
-    // 1. Load the cert
-    //    First we need to get the idPub from the card using pair step 1
-    //    This will return an empty cert (because we haven't loaded one)
-    //-----------------------------------
     Random random = new Random();
     byte[] challenge = new byte[32];
     random.nextBytes(challenge);
-    APDUResponse response = cmdSet.pair(SecureChannel.PAIR_P1_FIRST_STEP, challenge);
-    byte[] data = response.getData();
-    assertEquals(0x9000, response.getSw());
+    APDUResponse response;
+    byte[] data;
+    Signature signature;
+    signature = Signature.getInstance("SHA256withECDSA", "BC");
+    byte off;
+    byte[] sigBytes;
+    System.out.println("Setting up");
 
-    // 1A. Get the public key from the response
-    // Start the offset at the signature template (skip the 32 byte challenge and X byte
-    // DER cert, which hasn't been loaded yet, so it should be all zeros)
-    byte off = (byte) 1;
-    off += (byte) data[off] + 2;
-    off += (short) (data[off] + 1);
-    byte[] cardPubKeyBytes = pubKeyFromSigTemplate(data, (short) off);
-
-    // 1B. Sign the pubkey
-    Signature signature = Signature.getInstance("SHA256withECDSA", "BC");
-    signature.initSign(signerPriv);
-    signature.update(cardPubKeyBytes, 0, 65);
-    byte[] sigBytes = signature.sign();
-
-    // 1C. Build the template
-    byte[] cert = buildSigTemplate(sigBytes, signerPub);
-    response = cmdSet.loadCerts(cert);
-    assertEquals(0x9000, response.getSw());
+    // If we have not yet gotten the card pubkey, we need to get it and 
+    // load a corresponding cert
+    if (cardPubKeyBytes == null || cardPubKeyBytes.length == 0) {
+      // 1. Load the cert (if needed)
+      //    First we need to get the idPub from the card using pair step 1
+      //    This will return an empty cert (because we haven't loaded one)
+      //-----------------------------------
+      response = cmdSet.pair(SecureChannel.PAIR_P1_FIRST_STEP, challenge);
+      data = response.getData();
+      assertEquals(0x9000, response.getSw());
+      
+      // 1A. Get the public key from the response
+      // Start the offset at the signature template (skip the 32 byte challenge and X byte
+      // DER cert, which hasn't been loaded yet, so it should be all zeros)
+      off = (byte) 1;
+      off += (byte) data[off] + 2;
+      off += (short) (data[off] + 1);
+      cardPubKeyBytes = pubKeyFromSigTemplate(data, (short) off);
+      
+      // 1B. Sign the pubkey
+      signature.initSign(signerPriv);
+      signature.update(cardPubKeyBytes, 0, 65);
+      sigBytes = signature.sign();
+      
+      // 1C. Build the template
+      byte[] cert = buildSigTemplate(sigBytes, signerPub);
+      response = cmdSet.loadCerts(cert);
+      assertEquals(0x9000, response.getSw());
+    }
 
     // 2. Pair
     //    We will call pair step 1 a second time (mostly just for
@@ -300,6 +308,7 @@ public class KeycardTest {
     assertEquals(0x9000, response.getSw());
     assertEquals(KeycardApplet.TLV_CHALLENGE, data[0]);
     assertEquals(32, data[1]);
+
     // Ensure a cert was loaded [TODO]
     
     // 2A. First sign the card challenge with the Lattice key
@@ -308,28 +317,26 @@ public class KeycardTest {
     signature.update(toSign, 0, 32);
     sigBytes = signature.sign();
     byte[] latticeSigTemplate = buildSigTemplate(sigBytes, latticePub);
-
     // 2B. Sign the card's idPub with the cert signer
     signature.initSign(signerPriv);
+    // System.out.println("Signing card pub " + Arrays.toString(cardPubKeyBytes));
     signature.update(cardPubKeyBytes, 0, cardPubKeyBytes.length);
     sigBytes = signature.sign();
 
     byte[] certHeader = { KeycardApplet.TLV_CERT, (byte) sigBytes.length };
     byte[] pair2Data = concat(latticeSigTemplate, certHeader);
     pair2Data = concat(pair2Data, sigBytes);
-
+    // System.out.println("\n\npair2data " + Arrays.toString(pair2Data) + "\n");
     response = cmdSet.pair(SecureChannel.PAIR_P1_LAST_STEP, pair2Data);
+    System.out.println("res " + Arrays.toString(response.getData()));
     assertEquals(0x9000, response.getSw());
-
-
-    // if (cmdSet.getApplicationInfo().hasSecureChannelCapability()) {
-      // cmdSet.autoPair(sharedSecret);
-    // }
+    System.out.println("Done with setup");
   }
 
   @AfterEach
   void tearDown() throws Exception {
-    // resetAndSelectAndOpenSC();
+    reset();
+    resetAndSelectAndOpenSC();
 
     // if (cmdSet.getApplicationInfo().hasCredentialsManagementCapability()) {
     //   APDUResponse response = cmdSet.verifyPIN("000000");
@@ -357,24 +364,27 @@ public class KeycardTest {
 
     assertTrue(new ApplicationInfo(data).isInitializedCard());
   }
-/*
+
   @Test
   @DisplayName("OPEN SECURE CHANNEL command")
   @Capabilities("secureChannel")
   void openSecureChannelTest() throws Exception {
+    byte pairingIdx = (byte) 0; // We only use the first pairing index
     // Wrong P1
-    APDUResponse response = cmdSet.openSecureChannel((byte)(secureChannel.getPairingIndex() + 1), new byte[65]);
+    // APDUResponse response = cmdSet.openSecureChannel((byte)(secureChannel.getPairingIndex() + 1), new byte[65]);
+    APDUResponse response = cmdSet.openSecureChannel((byte)(KeycardApplet.PAIRING_MAX_CLIENT_COUNT + 1), new byte[65]);
     assertEquals(0x6A86, response.getSw());
 
     // Wrong data
-    response = cmdSet.openSecureChannel(secureChannel.getPairingIndex(), new byte[65]);
+    response = cmdSet.openSecureChannel(pairingIdx, new byte[65]);
     assertEquals(0x6A80, response.getSw());
 
     // Good case
-    response = cmdSet.openSecureChannel(secureChannel.getPairingIndex(), secureChannel.getPublicKey());
+    response = cmdSet.openSecureChannel(pairingIdx, secureChannel.getPublicKey());
     assertEquals(0x9000, response.getSw());
     assertEquals(SecureChannel.SC_SECRET_LENGTH + SecureChannel.SC_BLOCK_SIZE, response.getData().length);
-    secureChannel.processOpenSecureChannelResponse(response);
+    secureChannel.processOpenSecureChannelResponseV2(response);
+    /*
 
     // Send command before MUTUALLY AUTHENTICATE
     secureChannel.reset();
@@ -404,8 +414,9 @@ public class KeycardTest {
         break;
       }
     }
+    */
   }
-
+/*
   @Test
   @DisplayName("MUTUALLY AUTHENTICATE command")
   @Capabilities("secureChannel")
@@ -2101,7 +2112,7 @@ public class KeycardTest {
     if (cmdSet.getApplicationInfo().hasSecureChannelCapability()) {
       reset();
       cmdSet.select();
-      // cmdSet.autoOpenSecureChannel();
+      cmdSet.autoOpenSecureChannel();
     }
   }
 

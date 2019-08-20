@@ -139,6 +139,7 @@ public class SecureChannel {
 
     if (pairingKeys[pairingKeyOff] != 1) {
       ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
+
     } else {
       pairingKeyOff++;
     }
