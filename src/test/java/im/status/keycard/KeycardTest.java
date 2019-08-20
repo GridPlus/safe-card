@@ -267,7 +267,6 @@ public class KeycardTest {
     signature = Signature.getInstance("SHA256withECDSA", "BC");
     byte off;
     byte[] sigBytes;
-    System.out.println("Setting up");
 
     // If we have not yet gotten the card pubkey, we need to get it and 
     // load a corresponding cert
@@ -329,9 +328,20 @@ public class KeycardTest {
     pair2Data = concat(pair2Data, sigBytes);
     // System.out.println("\n\npair2data " + Arrays.toString(pair2Data) + "\n");
     response = cmdSet.pair(SecureChannel.PAIR_P1_LAST_STEP, pair2Data);
-    System.out.println("res " + Arrays.toString(response.getData()));
+    System.out.println("pair2 res " + Arrays.toString(response.getData()));
     assertEquals(0x9000, response.getSw());
     pairingKey = Arrays.copyOfRange(response.getData(), 1, 33);
+    System.out.println("pairingKey " + Arrays.toString(pairingKey));
+
+    // 3. Open the secure channel
+    byte pairingIdx = 0;
+    response = cmdSet.openSecureChannel(pairingIdx, secureChannel.getPublicKey());
+    assertEquals(0x9000, response.getSw());
+    assertEquals(SecureChannel.SC_SECRET_LENGTH + SecureChannel.SC_BLOCK_SIZE, response.getData().length);
+    System.out.println("secure channel res: " + Arrays.toString(response.getData()));
+    secureChannel.processOpenSecureChannelResponseV2(response, pairingKey);
+    response = cmdSet.mutuallyAuthenticate();
+    assertEquals(0x9000, response.getSw());
   }
 
   @AfterEach
@@ -365,7 +375,8 @@ public class KeycardTest {
 
     assertTrue(new ApplicationInfo(data).isInitializedCard());
   }
-
+  
+  /*
   @Test
   @DisplayName("OPEN SECURE CHANNEL command")
   @Capabilities("secureChannel")
@@ -381,11 +392,12 @@ public class KeycardTest {
     assertEquals(0x6A80, response.getSw());
 
     // Good case
+    System.out.println("secure channel pubkey " + Arrays.toString(secureChannel.getPublicKey()));
     response = cmdSet.openSecureChannel(pairingIdx, secureChannel.getPublicKey());
     assertEquals(0x9000, response.getSw());
     assertEquals(SecureChannel.SC_SECRET_LENGTH + SecureChannel.SC_BLOCK_SIZE, response.getData().length);
+    System.out.println("response data " + Arrays.toString(response.getData()));
     secureChannel.processOpenSecureChannelResponseV2(response, pairingKey);
-    /*
 
     // Send command before MUTUALLY AUTHENTICATE
     secureChannel.reset();
@@ -394,10 +406,10 @@ public class KeycardTest {
 
     // Perform mutual authentication
     secureChannel.setOpen();
-    response = cmdSet.mutuallyAuthenticate();
-    assertEquals(0x9000, response.getSw());
-    assertTrue(secureChannel.verifyMutuallyAuthenticateResponse(response));
 
+    // response = cmdSet.mutuallyAuthenticate();
+    // assertEquals(0x9000, response.getSw());
+    // assertTrue(secureChannel.verifyMutuallyAuthenticateResponse(response));
     // Verify that the channel is open
     response = cmdSet.getStatus(KeycardApplet.GET_STATUS_P1_APPLICATION);
     assertEquals(0x9000, response.getSw());
@@ -415,8 +427,8 @@ public class KeycardTest {
         break;
       }
     }
-    */
   }
+  */
 /*
   @Test
   @DisplayName("MUTUALLY AUTHENTICATE command")
@@ -1740,7 +1752,7 @@ public class KeycardTest {
     assertEquals(success, response.getSw());
 
     // Fail to export the seed
-    response = cmdSet.exportSeed();
+    response = cmdSet.exportSeed();n
     assertEquals(0x6986, response.getSw());
 
     // Fail to generate a new (exportable) seed while one is on the device
