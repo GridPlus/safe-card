@@ -72,6 +72,7 @@ public class KeycardTest {
   private static LedgerUSBManager usbManager;
 
   private static byte[] sharedSecret;
+  private static byte[] pairingKey;
 
   private TestSecureChannelSession secureChannel;
   private TestKeycardCommandSet cmdSet;
@@ -330,7 +331,7 @@ public class KeycardTest {
     response = cmdSet.pair(SecureChannel.PAIR_P1_LAST_STEP, pair2Data);
     System.out.println("res " + Arrays.toString(response.getData()));
     assertEquals(0x9000, response.getSw());
-    System.out.println("Done with setup");
+    pairingKey = Arrays.copyOfRange(response.getData(), 1, 33);
   }
 
   @AfterEach
@@ -383,7 +384,7 @@ public class KeycardTest {
     response = cmdSet.openSecureChannel(pairingIdx, secureChannel.getPublicKey());
     assertEquals(0x9000, response.getSw());
     assertEquals(SecureChannel.SC_SECRET_LENGTH + SecureChannel.SC_BLOCK_SIZE, response.getData().length);
-    secureChannel.processOpenSecureChannelResponseV2(response);
+    secureChannel.processOpenSecureChannelResponseV2(response, pairingKey);
     /*
 
     // Send command before MUTUALLY AUTHENTICATE
@@ -2112,7 +2113,7 @@ public class KeycardTest {
     if (cmdSet.getApplicationInfo().hasSecureChannelCapability()) {
       reset();
       cmdSet.select();
-      cmdSet.autoOpenSecureChannel();
+      // cmdSet.autoOpenSecureChannel();
     }
   }
 
