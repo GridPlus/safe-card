@@ -13,6 +13,8 @@ public class KeycardApplet extends Applet {
   static final byte INS_GET_STATUS = (byte) 0xF2;
   static final byte INS_SET_NDEF = (byte) 0xF3;
   static final byte INS_INIT = (byte) 0xFE;
+  static final byte INS_LOAD_CERT = (byte) 0xFA;
+  static final byte INS_EXPORT_CERT = (byte) 0xFB;
   static final byte INS_VERIFY_PIN = (byte) 0x20;
   static final byte INS_CHANGE_PIN = (byte) 0x21;
   static final byte INS_UNBLOCK_PIN = (byte) 0x22;
@@ -25,6 +27,8 @@ public class KeycardApplet extends Applet {
   static final byte INS_SIGN = (byte) 0xC0;
   static final byte INS_SET_PINLESS_PATH = (byte) 0xC1;
   static final byte INS_EXPORT_KEY = (byte) 0xC2;
+  static final byte INS_EXPORT_SEED = (byte) 0xC3;
+  static final byte INS_AUTHENTICATE = (byte) 0xEE;
 
   static final short SW_REFERENCED_DATA_NOT_FOUND = (short) 0x6A88;
 
@@ -33,7 +37,7 @@ public class KeycardApplet extends Applet {
   static final byte PIN_LENGTH = 6;
   static final byte PIN_MAX_RETRIES = 3;
   static final byte KEY_PATH_MAX_DEPTH = 10;
-  static final byte PAIRING_MAX_CLIENT_COUNT = 5;
+  static final byte PAIRING_MAX_CLIENT_COUNT = 1;
   static final byte UID_LENGTH = 16;
 
   static final short CHAIN_CODE_SIZE = 32;
@@ -76,6 +80,7 @@ public class KeycardApplet extends Applet {
 
   static final byte EXPORT_KEY_P2_PRIVATE_AND_PUBLIC = 0x00;
   static final byte EXPORT_KEY_P2_PUBLIC_ONLY = 0x01;
+  static final byte EXPORT_KEY_P2_PUBLIC_AND_CHAINCODE = 0x02;
 
   static final byte TLV_SIGNATURE_TEMPLATE = (byte) 0xA0;
 
@@ -83,6 +88,10 @@ public class KeycardApplet extends Applet {
   static final byte TLV_PUB_KEY = (byte) 0x80;
   static final byte TLV_PRIV_KEY = (byte) 0x81;
   static final byte TLV_CHAIN_CODE = (byte) 0x82;
+
+  static final byte TLV_SEED = (byte) 0x90;
+  static final byte TLV_CERT = (byte) 0x91;
+  static final byte TLV_SEED_FLAG = (byte) 0x9F;
 
   static final byte TLV_APPLICATION_STATUS_TEMPLATE = (byte) 0xA3;
   static final byte TLV_INT = (byte) 0x02;
@@ -93,6 +102,7 @@ public class KeycardApplet extends Applet {
   static final byte TLV_KEY_UID = (byte) 0x8E;
   static final byte TLV_CAPABILITIES = (byte) 0x8D;
 
+
   static final byte CAPABILITY_SECURE_CHANNEL = (byte) 0x01;
   static final byte CAPABILITY_KEY_MANAGEMENT = (byte) 0x02;
   static final byte CAPABILITY_CREDENTIALS_MANAGEMENT = (byte) 0x04;
@@ -102,11 +112,27 @@ public class KeycardApplet extends Applet {
 
   static final byte[] EIP_1581_PREFIX = { (byte) 0x80, 0x00, 0x00, 0x2B, (byte) 0x80, 0x00, 0x00, 0x3C, (byte) 0x80, 0x00, 0x06, 0x2D};
 
+  static final byte SFLAG_NONE = 0;
+  static final byte SFLAG_NOT_EXPORTABLE = 1;
+  static final byte SFLAG_EXPORTABLE = 2;
+  static final byte SFLAG_MAX = 2;
+
+  static final byte INIT_P1_FIRST_TIME = 0x00;
+  static final byte INIT_P1_NEW_CLIENT = 0x01;
+
   private OwnerPIN pin;
   private OwnerPIN puk;
   private byte[] uid;
   private SecureChannel secureChannel;
 
+  static final short CERT_LEN = 72; // Maximum DER length
+  private byte[] cert;
+  private byte certLoaded;
+  private ECPublicKey idPublic;
+  private ECPrivateKey idPrivate;
+
+  private byte[] masterSeed;
+  private byte masterSeedFlag;
   private ECPublicKey masterPublic;
   private ECPrivateKey masterPrivate;
   private byte[] masterChainCode;
@@ -172,6 +198,12 @@ public class KeycardApplet extends Applet {
     uid = new byte[UID_LENGTH];
     crypto.random.generateData(uid, (short) 0, UID_LENGTH);
 
+    cert = new byte[CERT_LEN];
+    certLoaded = 0;
+
+    masterSeed = new byte[BIP39_SEED_SIZE];
+    masterSeedFlag = SFLAG_NONE;
+
     masterPublic = (ECPublicKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PUBLIC, SECP256k1.SECP256K1_KEY_SIZE, false);
     masterPrivate = (ECPrivateKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PRIVATE, SECP256k1.SECP256K1_KEY_SIZE, false);
 
@@ -184,6 +216,9 @@ public class KeycardApplet extends Applet {
     pinlessPublicKey = (ECPublicKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PUBLIC, SECP256k1.SECP256K1_KEY_SIZE, false);
     pinlessPrivateKey = (ECPrivateKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PRIVATE, SECP256k1.SECP256K1_KEY_SIZE, false);
 
+    idPublic = (ECPublicKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PUBLIC, SECP256k1.SECP256K1_KEY_SIZE, false);
+    idPrivate = (ECPrivateKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PRIVATE, SECP256k1.SECP256K1_KEY_SIZE, false);
+
     masterChainCode = new byte[CHAIN_CODE_SIZE];
     parentChainCode = new byte[CHAIN_CODE_SIZE];
     chainCode = new byte[CHAIN_CODE_SIZE];
@@ -193,6 +228,19 @@ public class KeycardApplet extends Applet {
     keyUID = new byte[KEY_UID_LENGTH];
 
     resetCurveParameters();
+
+    // Set the curve params for the certsAuth keypair. This MUST happen after all
+    // other keys are initialized or else the card will lock! 
+    secp256k1.setCurveParameters(idPublic);
+    secp256k1.setCurveParameters(idPrivate);
+
+    // Load the certs auth keypair with data
+    byte[] privBuf = JCSystem.makeTransientByteArray((short) Crypto.KEY_SECRET_SIZE, JCSystem.CLEAR_ON_RESET);
+    crypto.random.generateData(privBuf, (short) 0, Crypto.KEY_SECRET_SIZE);
+    idPrivate.setS(privBuf, (short) 0, Crypto.KEY_SECRET_SIZE);
+    byte[] pubBuf = JCSystem.makeTransientByteArray((short) Crypto.KEY_PUB_SIZE, JCSystem.CLEAR_ON_RESET);
+    secp256k1.derivePublicKey(privBuf, (short) 0, pubBuf, (short) 0);
+    idPublic.setW(pubBuf, (short) 0, Crypto.KEY_PUB_SIZE);
 
     signature = Signature.getInstance(Signature.ALG_ECDSA_SHA_256, false);
 
@@ -212,8 +260,32 @@ public class KeycardApplet extends Applet {
    * @throws ISOException any processing error
    */
   public void process(APDU apdu) throws ISOException {
+    byte[] apduBuffer = apdu.getBuffer();
+    byte code = apduBuffer[ISO7816.OFFSET_INS];
+    byte p1 = apduBuffer[ISO7816.OFFSET_P1];
+    
+    // Cert loading should happen before init
+    if (code == INS_LOAD_CERT) {
+      loadCert(apdu);
+      return;
+    }
+
+    // Cert reading can happen either at init or before it,
+    // so we should check it here
+    if (code == INS_EXPORT_CERT) {
+      exportCerts(apdu);
+      return;
+    }
+
+    // We can request an authentication signature to validate the certs
+    // at any time
+    if (code == INS_AUTHENTICATE) {
+      authenticate(apdu);
+      return;
+    }
+
     // If we have no PIN it means we still have to initialize the applet.
-    if (pin == null) {
+    if (pin == null || (code == INS_INIT && p1 == INIT_P1_NEW_CLIENT)) {
       processInit(apdu);
       return;
     }
@@ -225,10 +297,9 @@ public class KeycardApplet extends Applet {
     }
 
     apdu.setIncomingAndReceive();
-    byte[] apduBuffer = apdu.getBuffer();
 
     try {
-      switch (apduBuffer[ISO7816.OFFSET_INS]) {
+      switch (code) {
         case SecureChannel.INS_OPEN_SECURE_CHANNEL:
           secureChannel.openSecureChannel(apdu);
           break;
@@ -283,6 +354,9 @@ public class KeycardApplet extends Applet {
         case INS_EXPORT_KEY:
           exportKey(apdu);
           break;
+        case INS_EXPORT_SEED:
+          exportSeed(apdu);
+          break;
         default:
           ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
           break;
@@ -316,12 +390,14 @@ public class KeycardApplet extends Applet {
   private void processInit(APDU apdu) {
     byte[] apduBuffer = apdu.getBuffer();
     apdu.setIncomingAndReceive();
-
+    byte cmd = apduBuffer[ISO7816.OFFSET_INS];
+    byte p1 = apduBuffer[ISO7816.OFFSET_P1];
     if (selectingApplet()) {
       apduBuffer[0] = TLV_PUB_KEY;
       apduBuffer[1] = (byte) secureChannel.copyPublicKey(apduBuffer, (short) 2);
       apdu.setOutgoingAndSend((short) 0, (short)(apduBuffer[1] + 2));
-    } else if (apduBuffer[ISO7816.OFFSET_INS] == INS_INIT) {
+    } else if (cmd == INS_INIT && p1 == INIT_P1_FIRST_TIME) {
+      // The first time we are calling INIT - load the PIN and PUK
       secureChannel.oneShotDecrypt(apduBuffer);
 
       if ((apduBuffer[ISO7816.OFFSET_LC] != (byte)(PIN_LENGTH + PUK_LENGTH + SecureChannel.SC_SECRET_LENGTH)) || !allDigits(apduBuffer, ISO7816.OFFSET_CDATA, (short)(PIN_LENGTH + PUK_LENGTH))) {
@@ -338,6 +414,23 @@ public class KeycardApplet extends Applet {
       puk.update(apduBuffer, (short)(ISO7816.OFFSET_CDATA + PIN_LENGTH), PUK_LENGTH);
 
       JCSystem.commitTransaction();
+    } else if (cmd == INS_INIT && p1 == INIT_P1_NEW_CLIENT) {
+      // The card has already been initialized, but we need to create a pairing
+      secureChannel.oneShotDecrypt(apduBuffer);
+
+      if (apduBuffer[ISO7816.OFFSET_LC] != (byte)(SecureChannel.SC_SECRET_LENGTH)) {
+        ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+      }
+
+      if (pin == null) {
+        // Don't allow re-init if init hasn't happened
+        ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
+      }
+
+      JCSystem.beginTransaction();
+      secureChannel.reInitSecureChannel(apduBuffer, (short)(ISO7816.OFFSET_CDATA));
+      JCSystem.commitTransaction();
+      
     } else {
       ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
     }
@@ -419,6 +512,10 @@ public class KeycardApplet extends Applet {
     apduBuffer[off++] = TLV_CAPABILITIES;
     apduBuffer[off++] = 1;
     apduBuffer[off++] = APPLICATION_CAPABILITIES;
+
+    apduBuffer[off++] = TLV_SEED_FLAG;
+    apduBuffer[off++] = 1;
+    apduBuffer[off++] = masterSeedFlag;
 
     apduBuffer[lenoff] = (byte)(off - lenoff - 1);
     apdu.setOutgoingAndSend((short) 0, off);
@@ -650,14 +747,25 @@ public class KeycardApplet extends Applet {
     if (!pin.isValidated()) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
+    byte flag = (byte) (apduBuffer[ISO7816.OFFSET_P2] + (byte) 1); // non-exportable = 1, exportable = 2
 
     switch (apduBuffer[ISO7816.OFFSET_P1])  {
       case LOAD_KEY_P1_EC:
       case LOAD_KEY_P1_EXT_EC:
         loadKeyPair(apduBuffer);
+        // Remove the seed to avoid a disconnect between it and the new
+        // master key
+        // We really shouldn't be using loadKeyPair at all, but we will
+        // keep it for compatibility with Status.
+        JCSystem.beginTransaction();
+        masterSeedFlag = SFLAG_NONE;
+        Util.arrayFillNonAtomic(masterSeed, (short) 0, (short) masterSeed.length, (byte) 0);
+        JCSystem.commitTransaction();
         break;
       case LOAD_KEY_P1_SEED:
         loadSeed(apduBuffer);
+        // Set the flag 
+        setSeedFlag(flag);
         break;
       default:
         ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
@@ -666,6 +774,16 @@ public class KeycardApplet extends Applet {
 
     pinlessPathLen = 0;
     generateKeyUIDAndRespond(apdu, apduBuffer);
+  }
+
+  private void setSeedFlag(byte flag) {
+    JCSystem.beginTransaction();
+    if (flag > SFLAG_MAX || flag < 0) {
+      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    }
+    masterSeedFlag = flag;
+    JCSystem.commitTransaction();
+    return;
   }
 
   /**
@@ -692,6 +810,81 @@ public class KeycardApplet extends Applet {
   }
 
   /**
+   * Processes the LOAD_CERTS command. Copies the APDU buffer into `certs`.
+   * This function expects a DER signature and may only be called once.
+   * @param apdu the JCRE-owned APDU object.
+   */
+  private void loadCert(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+    apdu.setIncomingAndReceive();    
+
+    if (certLoaded > 0) {
+      // Only allow this to happen once and make sure it's an appropriate size
+      ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
+    }
+
+    // Ensure the signature fits in the allocated buffer
+    // DER signatures are between 70 and 72 bytes, as R and S components
+    // are each either 32 or (rarely) 33 bytes
+    short len = (short) (apduBuffer[ISO7816.OFFSET_LC] & 0x00FF);
+    if (len > CERT_LEN || len < (short) (CERT_LEN - 2)) {
+      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    }
+    
+    // Load the DER signature as a cert
+    JCSystem.beginTransaction();
+    Util.arrayCopy(apduBuffer, (short) ISO7816.OFFSET_CDATA, cert, (short) 0, len);
+    // Prevent any future calls of this function
+    certLoaded = 1;
+    JCSystem.commitTransaction();
+  } 
+
+  /**
+   * Processes the EXPORT_CERTS command.
+   * Exports the certs stored in `certs`. This exports the entire byte array, even if some of it is empty.
+   * @param apdu the JCRE-owned APDU object.
+   */
+  private void exportCerts(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+    short off = 0;
+    apduBuffer[off] = TLV_CERT; off++;
+    apduBuffer[off] = (byte) CERT_LEN; off++;
+    Util.arrayCopyNonAtomic(cert, (short) 0, apduBuffer, (short) off, CERT_LEN);
+    off += CERT_LEN;
+    apdu.setOutgoingAndSend((short) 0, off);
+  }
+
+  private void authenticate(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+    apdu.setIncomingAndReceive();
+
+    // Ensure a 32-byte hash was passed
+    if (apduBuffer[ISO7816.OFFSET_LC] != MessageDigest.LENGTH_SHA_256) {
+      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    }
+
+    // Init the tmpSig with the private id key
+    signature.init(idPrivate, Signature.MODE_SIGN);
+
+    // Start a signature template. This logic is meant to be very similar to that in `sign()`
+    short outLen = (short) (5 + Crypto.KEY_PUB_SIZE);
+    // First make the signature and hash. This allows us to sign the correct data before overwriting apduBuffer
+    outLen += signature.signPreComputedHash(apduBuffer, (short) ISO7816.OFFSET_CDATA, MessageDigest.LENGTH_SHA_256, apduBuffer, outLen);
+    outLen += crypto.fixS(apduBuffer, outLen);
+
+    // Backfill the first part of apduBuffer
+    apduBuffer[0] = TLV_SIGNATURE_TEMPLATE;
+    apduBuffer[1] = (byte) 0x81;
+    apduBuffer[2] = (byte) (outLen - 3);
+    // Add public key for verification
+    apduBuffer[3] = TLV_PUB_KEY;
+    apduBuffer[4] = (byte) Crypto.KEY_PUB_SIZE;
+    idPublic.getW(apduBuffer, (short) 5);
+
+    apdu.setOutgoingAndSend((short) 0, (short) outLen);    
+  }
+
+  /**
    * Called internally by the loadKey method to load a key in the TLV format. The presence of the public key is optional.
    * The presence of the chain code determines whether the key is extended or not.
    *
@@ -701,6 +894,11 @@ public class KeycardApplet extends Applet {
     short pubOffset = (short)(ISO7816.OFFSET_CDATA + (apduBuffer[(short) (ISO7816.OFFSET_CDATA + 1)] == (byte) 0x81 ? 3 : 2));
     short privOffset = (short)(pubOffset + apduBuffer[(short)(pubOffset + 1)] + 2);
     short chainOffset = (short)(privOffset + apduBuffer[(short)(privOffset + 1)] + 2);
+
+    // Fail if there is a masterSeed - the user must remove it first
+    if (!isEmpty(masterSeed)) {
+      ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
+    }
 
     if (apduBuffer[pubOffset] != TLV_PUB_KEY) {
       chainOffset = privOffset;
@@ -761,6 +959,14 @@ public class KeycardApplet extends Applet {
     if (apduBuffer[ISO7816.OFFSET_LC] != BIP39_SEED_SIZE) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
+
+    // Do not allow overwriting of master seeds - require that the user call REMOVE_KEY first
+    if (!isEmpty(masterSeed)) {
+      ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
+    }
+
+    // Save the seed before turning it into a master key
+    Util.arrayCopy(apduBuffer, (short) ISO7816.OFFSET_CDATA, masterSeed, (short) 0, BIP39_SEED_SIZE);
 
     crypto.bip32MasterFromSeed(apduBuffer, (short) ISO7816.OFFSET_CDATA, BIP39_SEED_SIZE, apduBuffer, (short) ISO7816.OFFSET_CDATA);
 
@@ -1054,6 +1260,8 @@ public class KeycardApplet extends Applet {
     pinlessPrivateKey.clearKey();
     pinlessPublicKey.clearKey();
     resetCurveParameters();
+    masterSeedFlag = SFLAG_NONE;
+    Util.arrayFillNonAtomic(masterSeed, (short) 0, (short) masterSeed.length, (byte) 0);
     Util.arrayFillNonAtomic(chainCode, (short) 0, (short) chainCode.length, (byte) 0);
     Util.arrayFillNonAtomic(parentChainCode, (short) 0, (short) parentChainCode.length, (byte) 0);
     Util.arrayFillNonAtomic(masterChainCode, (short) 0, (short) masterChainCode.length, (byte) 0);
@@ -1076,12 +1284,18 @@ public class KeycardApplet extends Applet {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
 
+    byte flag = (byte) (apduBuffer[ISO7816.OFFSET_P1] + (byte) 1); // non-exportable = 1, exportable = 2
+
     apduBuffer[ISO7816.OFFSET_LC] = BIP39_SEED_SIZE;
     crypto.random.generateData(apduBuffer, ISO7816.OFFSET_CDATA, BIP39_SEED_SIZE);
 
     loadSeed(apduBuffer);
+    setSeedFlag(flag);
+    
     pinlessPathLen = 0;
-    generateKeyUIDAndRespond(apdu, apduBuffer);
+
+    Util.arrayCopyNonAtomic(masterSeed, (short) 0, apduBuffer, SecureChannel.SC_OUT_OFFSET, BIP39_SEED_SIZE);
+    secureChannel.respond(apdu, BIP39_SEED_SIZE, ISO7816.SW_NO_ERROR);
   }
 
   /**
@@ -1332,6 +1546,31 @@ public class KeycardApplet extends Applet {
   }
 
   /**
+   * Processes the EXPORT SEED command. Requires an open secure channel and the PIN to be verified.
+   *
+   * @param apdu the JCRE-owned APDU object.
+   */
+  private void exportSeed(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+    secureChannel.preprocessAPDU(apduBuffer);
+
+    if (!pin.isValidated() || masterSeed.length < 1) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+
+    if (masterSeedFlag != SFLAG_EXPORTABLE) {
+      ISOException.throwIt(ISO7816.SW_COMMAND_NOT_ALLOWED);
+    }
+
+    short off = SecureChannel.SC_OUT_OFFSET;
+    apduBuffer[off++] = TLV_SEED;
+    apduBuffer[off++] = (byte) BIP39_SEED_SIZE;
+    Util.arrayCopyNonAtomic(masterSeed, (short) 0, apduBuffer, off++, BIP39_SEED_SIZE);
+    
+    secureChannel.respond(apdu, (short) (2 + BIP39_SEED_SIZE), ISO7816.SW_NO_ERROR);
+  }
+
+  /**
    * Processes the EXPORT KEY command. Requires an open secure channel and the PIN to be verified.
    *
    * @param apdu the JCRE-owned APDU object.
@@ -1345,13 +1584,18 @@ public class KeycardApplet extends Applet {
     }
 
     boolean publicOnly;
-
+    boolean withChaincode;
     switch (apduBuffer[ISO7816.OFFSET_P2]) {
-      case EXPORT_KEY_P2_PRIVATE_AND_PUBLIC:
-        publicOnly = false;
-        break;
+      // case EXPORT_KEY_P2_PRIVATE_AND_PUBLIC:
+        // publicOnly = false;
+        // break;
       case EXPORT_KEY_P2_PUBLIC_ONLY:
         publicOnly = true;
+        withChaincode = false;
+        break;
+      case EXPORT_KEY_P2_PUBLIC_AND_CHAINCODE:
+        publicOnly = true;
+        withChaincode = true;
         break;
       default:
         ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
@@ -1428,6 +1672,15 @@ public class KeycardApplet extends Applet {
       off += len;
     }
 
+    if (withChaincode) {
+      apduBuffer[off++] = TLV_CHAIN_CODE;
+      off++;
+      Util.arrayCopyNonAtomic(chainCode, (short) 0, apduBuffer, off, CHAIN_CODE_SIZE);
+      len = CHAIN_CODE_SIZE;
+      apduBuffer[(short) (off - 1)] = (byte) len;
+      off += len;
+    }
+
     len = (short) (off - SecureChannel.SC_OUT_OFFSET);
     apduBuffer[(SecureChannel.SC_OUT_OFFSET + 1)] = (byte) (len - 2);
 
@@ -1464,6 +1717,16 @@ public class KeycardApplet extends Applet {
     return (pinlessPathLen > 0) && (pinlessPathLen == keyPathLen) && (Util.arrayCompare(keyPath, (short) 0, pinlessPath, (short) 0, keyPathLen) == 0);
   }
 
+  // Returns whether the provided byte array is filled with zeros
+  private boolean isEmpty(byte[] a) {
+    for (short i = 0; i < a.length; i++) {
+      if (a[i] != 0) {
+          return false;
+      }
+    }
+    return true;
+  } 
+
   /**
    * Set curve parameters to cleared keys
    */
@@ -1480,4 +1743,5 @@ public class KeycardApplet extends Applet {
     secp256k1.setCurveParameters(pinlessPublicKey);
     secp256k1.setCurveParameters(pinlessPrivateKey);
   }
+
 }

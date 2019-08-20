@@ -84,6 +84,23 @@ public class SecureChannel {
     scKeypair.genKeyPair();
   }
 
+
+  /**
+   * Re-initializes the SecureChannel instance with the pairing secret.
+   * This allows the client to create a pairing with a card that has already been
+   * initialized. The PIN and PUK cannot be changed.
+   *
+   * @param aPairingSecret the pairing secret
+   * @param off the offset in the buffer
+   */
+  public void reInitSecureChannel(byte[] aPairingSecret, short off) {
+    if (pairingSecret == null) return;
+    
+    pairingSecret = new byte[SC_SECRET_LENGTH];
+    Util.arrayCopy(aPairingSecret, off, pairingSecret, (short) 0, SC_SECRET_LENGTH);
+  }
+
+
   /**
    * Decrypts the content of the APDU by generating an AES key using EC-DH. Usable only with specific commands.
    * @param apduBuffer the APDU buffer
@@ -215,18 +232,26 @@ public class SecureChannel {
    * @return the length of the reply
    */
   private short pairStep1(byte[] apduBuffer) {
-    preassignedPairingOffset = -1;
+    // preassignedPairingOffset = -1;
 
-    for (short i = 0; i < (short) pairingKeys.length; i += PAIRING_KEY_LENGTH) {
-      if (pairingKeys[i] == 0) {
-        preassignedPairingOffset = i;
-        break;
-      }
-    }
+    // for (short i = 0; i < (short) pairingKeys.length; i += PAIRING_KEY_LENGTH) {
+      // if (pairingKeys[i] == 0) {
+        // preassignedPairingOffset = i;
+        // break;
+      // }
+    // }
 
-    if (preassignedPairingOffset == -1) {
-      ISOException.throwIt(ISO7816.SW_FILE_FULL);
-    }
+    // if (preassignedPairingOffset == -1) {
+      // ISOException.throwIt(ISO7816.SW_FILE_FULL);
+    // }
+
+    // GridPlus changes: We are going to overwrite the first pairing slot for all pairings.
+    // This prevents a scenario where the user cannot use the 6th Lattice interface their card
+    // connects to. There is no significant advantage to maintaining multiple pairing slots beside
+    // the overhead of making that pairing connection. We are happy to have the user make that pairing
+    // connection again each time they insert the card into a device.
+    preassignedPairingOffset = 0;
+
 
     crypto.sha256.update(pairingSecret, (short) 0, SC_SECRET_LENGTH);
     crypto.sha256.doFinal(apduBuffer, ISO7816.OFFSET_CDATA, SC_SECRET_LENGTH, apduBuffer, (short) 0);
