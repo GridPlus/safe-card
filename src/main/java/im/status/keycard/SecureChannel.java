@@ -179,6 +179,7 @@ public class SecureChannel {
     mutuallyAuthenticated = true;
 
     byte[] apduBuffer = apdu.getBuffer();
+
     short len = preprocessAPDU(apduBuffer);
 
     if (oldMutuallyAuthenticated) {
@@ -219,6 +220,9 @@ public class SecureChannel {
    * @return the length of the reply
    */
   public void pairStep2(byte[] apduBuffer) {
+    crypto.sha256.update(pairingSecret, (short) 0, SC_SECRET_LENGTH);
+    crypto.sha256.doFinal(secret, (short) 0, SC_SECRET_LENGTH, secret, (short) 0);
+
     crypto.random.generateData(apduBuffer, (short) 1, SC_SECRET_LENGTH);
     crypto.sha256.update(pairingSecret, (short) 0, SC_SECRET_LENGTH);
     crypto.sha256.doFinal(apduBuffer, (short) 1, SC_SECRET_LENGTH, pairingKeys, (short) (preassignedPairingOffset + 1));
@@ -260,12 +264,17 @@ public class SecureChannel {
 
     if (!verifyAESMAC(apduBuffer, apduLen)) {
       reset();
-      ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      // ISOException.throwIt(ISO7816.SW_SECURITY_STATUS_NOT_SATISFIED);
+      ISOException.throwIt(apduLen);
     }
 
     crypto.aesCbcIso9797m2.init(scEncKey, Cipher.MODE_DECRYPT, secret, (short) 0, SC_BLOCK_SIZE);
     Util.arrayCopyNonAtomic(apduBuffer, ISO7816.OFFSET_CDATA, secret, (short) 0, SC_BLOCK_SIZE);
-    short len = crypto.aesCbcIso9797m2.doFinal(apduBuffer, (short)(ISO7816.OFFSET_CDATA + SC_BLOCK_SIZE), (short) (apduLen - SC_BLOCK_SIZE), apduBuffer, ISO7816.OFFSET_CDATA);
+    short len = crypto.aesCbcIso9797m2.doFinal(apduBuffer, 
+                                              (short)(ISO7816.OFFSET_CDATA + SC_BLOCK_SIZE), 
+                                              (short) (apduLen - SC_BLOCK_SIZE), 
+                                              apduBuffer, 
+                                              ISO7816.OFFSET_CDATA);
 
     apduBuffer[ISO7816.OFFSET_LC] = (byte) len;
 
@@ -284,7 +293,12 @@ public class SecureChannel {
     scMac.update(apduBuffer, (short) 0, ISO7816.OFFSET_CDATA);
     scMac.update(secret, SC_BLOCK_SIZE, (short) (SC_BLOCK_SIZE - ISO7816.OFFSET_CDATA));
 
-    return scMac.verify(apduBuffer, (short) (ISO7816.OFFSET_CDATA + SC_BLOCK_SIZE), (short) (apduLen - SC_BLOCK_SIZE), apduBuffer, ISO7816.OFFSET_CDATA, SC_BLOCK_SIZE);
+    return scMac.verify(apduBuffer, 
+                        (short) (ISO7816.OFFSET_CDATA + SC_BLOCK_SIZE), 
+                        (short) (apduLen - SC_BLOCK_SIZE), 
+                        apduBuffer, 
+                        ISO7816.OFFSET_CDATA, 
+                        SC_BLOCK_SIZE);
   }
 
   /**

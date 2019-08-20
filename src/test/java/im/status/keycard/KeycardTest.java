@@ -319,19 +319,15 @@ public class KeycardTest {
     byte[] latticeSigTemplate = buildSigTemplate(sigBytes, latticePub);
     // 2B. Sign the card's idPub with the cert signer
     signature.initSign(signerPriv);
-    // System.out.println("Signing card pub " + Arrays.toString(cardPubKeyBytes));
     signature.update(cardPubKeyBytes, 0, cardPubKeyBytes.length);
     sigBytes = signature.sign();
 
     byte[] certHeader = { KeycardApplet.TLV_CERT, (byte) sigBytes.length };
     byte[] pair2Data = concat(latticeSigTemplate, certHeader);
     pair2Data = concat(pair2Data, sigBytes);
-    // System.out.println("\n\npair2data " + Arrays.toString(pair2Data) + "\n");
     response = cmdSet.pair(SecureChannel.PAIR_P1_LAST_STEP, pair2Data);
-    System.out.println("pair2 res " + Arrays.toString(response.getData()));
     assertEquals(0x9000, response.getSw());
     pairingKey = Arrays.copyOfRange(response.getData(), 1, 33);
-    System.out.println("pairingKey " + Arrays.toString(pairingKey));
 
     // 3. Open the secure channel
     byte pairingIdx = 0;
@@ -340,7 +336,15 @@ public class KeycardTest {
     assertEquals(SecureChannel.SC_SECRET_LENGTH + SecureChannel.SC_BLOCK_SIZE, response.getData().length);
     System.out.println("secure channel res: " + Arrays.toString(response.getData()));
     secureChannel.processOpenSecureChannelResponseV2(response, pairingKey);
-    response = cmdSet.mutuallyAuthenticate();
+    
+    
+    // Testing
+    byte[] randomData = new byte[32];
+    random.nextBytes(randomData);
+    response = cmdSet.sendCommand(SecureChannel.INS_MUTUALLY_AUTHENTICATE, (byte) 0, (byte) 0, randomData);
+    // System.out.println("res? " + Arrays.toString(response.getData()));
+    // System.out.println("res code " + response.getSw());
+    // response = cmdSet.mutuallyAuthenticate();
     assertEquals(0x9000, response.getSw());
   }
 
