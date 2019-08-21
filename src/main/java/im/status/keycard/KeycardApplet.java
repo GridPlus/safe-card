@@ -13,6 +13,7 @@ public class KeycardApplet extends Applet {
   static final byte INS_GET_STATUS = (byte) 0xF2;
   static final byte INS_SET_NDEF = (byte) 0xF3;
   static final byte INS_INIT = (byte) 0xFE;
+  static final byte INS_IDENTIFY_CARD = (byte) 0xFB;
   static final byte INS_VERIFY_PIN = (byte) 0x20;
   static final byte INS_CHANGE_PIN = (byte) 0x21;
   static final byte INS_UNBLOCK_PIN = (byte) 0x22;
@@ -225,6 +226,15 @@ public class KeycardApplet extends Applet {
    * @throws ISOException any processing error
    */
   public void process(APDU apdu) throws ISOException {
+    apdu.setIncomingAndReceive();
+    byte[] apduBuffer = apdu.getBuffer();
+
+    // Identify card may happen before init
+    if (apduBuffer[ISO7816.OFFSET_INS] == INS_IDENTIFY_CARD) {
+      secureChannel.identifyCard(apdu);
+      return;
+    }
+
     // If we have no PIN it means we still have to initialize the applet.
     if (pin == null) {
       processInit(apdu);
@@ -236,10 +246,7 @@ public class KeycardApplet extends Applet {
       selectApplet(apdu);
       return;
     }
-
-    apdu.setIncomingAndReceive();
-    byte[] apduBuffer = apdu.getBuffer();
-
+    
     try {
       switch (apduBuffer[ISO7816.OFFSET_INS]) {
         case SecureChannel.INS_OPEN_SECURE_CHANNEL:

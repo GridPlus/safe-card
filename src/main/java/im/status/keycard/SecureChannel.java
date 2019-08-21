@@ -26,10 +26,14 @@ public class SecureChannel {
   // This is the maximum length acceptable for plaintext commands/responses for APDUs in short format
   public static final short SC_MAX_PLAIN_LENGTH = (short) 223;
 
+  // Card identity key
+  private KeyPair idKeypair;
+
   private AESKey scEncKey;
   private AESKey scMacKey;
   private Signature scMac;
   private KeyPair scKeypair;
+  private Signature eccSig;
   private byte[] secret;
   private byte[] pairingSecret;
 
@@ -54,7 +58,13 @@ public class SecureChannel {
   public SecureChannel(byte pairingLimit, Crypto crypto, SECP256k1 secp256k1) {
     this.crypto = crypto;
 
+    idKeypair = new KeyPair(KeyPair.ALG_EC_FP, SC_KEY_LENGTH);
+    secp256k1.setCurveParameters((ECKey) idKeypair.getPrivate());
+    secp256k1.setCurveParameters((ECKey) idKeypair.getPublic());
+    idKeypair.genKeyPair();
+
     scMac = Signature.getInstance(Signature.ALG_AES_MAC_128_NOPAD, false);
+    eccSig = Signature.getInstance(Signature.ALG_ECDSA_SHA_256, false);
 
     scEncKey = (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_DESELECT, KeyBuilder.LENGTH_AES_256, false);
     scMacKey = (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES_TRANSIENT_DESELECT, KeyBuilder.LENGTH_AES_256, false);
@@ -174,6 +184,35 @@ public class SecureChannel {
 
     crypto.random.generateData(apduBuffer, SC_OUT_OFFSET, SC_SECRET_LENGTH);
     respond(apdu, len, ISO7816.SW_NO_ERROR);
+  }
+
+  /**
+   * Processes the IDENTIFY_CARD command. Returns the card public key, and a signature on the
+   * challenge salt, to prove ownership of the key.
+   * @param apdu the JCRE-owned APDU object.
+   */
+  public void identifyCard(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+
+    // Ensure the received challenge is appropriate length
+    if (apduBuffer[ISO7816.OFFSET_LC] != MessageDigest.LENGTH_SHA_256) {
+      ISOException.throwIt(ISO7816.SW_DATA_INVALID);
+    }
+
+    // Copy card ID pubKey to the response buffer
+    short responseOffset = (short) ISO7816.OFFSET_CDATA + (short) MessageDigest.LENGTH_SHA_256;
+    short off = responseOffset;
+    ECPublicKey pk = (ECPublicKey) idKeypair.getPublic();
+    short len = pk.getW(apduBuffer, off);
+    off += len;
+
+    // Sign the challenge and copy signature to response buffer
+    eccSig.init(idKeypair.getPrivate(), Signature.MODE_SIGN);
+    len = eccSig.signPreComputedHash(apduBuffer, (short) ISO7816.OFFSET_CDATA, MessageDigest.LENGTH_SHA_256, apduBuffer, off);
+    off += len;
+
+    // Send the response
+    apdu.setOutgoingAndSend((short) responseOffset, (short)(off - responseOffset));
   }
 
   /**
