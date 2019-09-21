@@ -26,6 +26,8 @@ public class KeycardApplet extends Applet {
   static final byte INS_SET_PINLESS_PATH = (byte) 0xC1;
   static final byte INS_EXPORT_KEY = (byte) 0xC2;
   static final byte INS_EXPORT_SEED = (byte) 0xC3;
+  static final byte INS_LOAD_DATA = (byte) 0xC4;
+  static final byte INS_EXPORT_DATA = (byte) 0xC5;
 
   static final short SW_REFERENCED_DATA_NOT_FOUND = (short) 0x6A88;
 
@@ -36,6 +38,7 @@ public class KeycardApplet extends Applet {
   static final byte KEY_PATH_MAX_DEPTH = 10;
   static final byte PAIRING_MAX_CLIENT_COUNT = 1;
   static final byte UID_LENGTH = 16;
+  static final byte SAVED_DATA_SIZE = 155; // 5x compressed public key
 
   static final short CHAIN_CODE_SIZE = 32;
   static final short KEY_UID_LENGTH = 32;
@@ -94,6 +97,7 @@ public class KeycardApplet extends Applet {
   static final byte TLV_CHAIN_CODE = (byte) 0x82;
   static final byte TLV_SEED = (byte) 0x83;
   static final byte TLV_SEED_STATUS = (byte) 0x84;
+  static final byte TLV_DATA = (byte) 0x85;
 
   static final byte TLV_APPLICATION_STATUS_TEMPLATE = (byte) 0xA3;
   static final byte TLV_INT = (byte) 0x02;
@@ -121,6 +125,8 @@ public class KeycardApplet extends Applet {
   private OwnerPIN puk;
   private byte[] uid;
   private SecureChannel secureChannel;
+  
+  private byte[] savedData;
 
   private byte[] masterSeed;
   private byte masterSeedStatus; // Invalid / valid, but non-exportable / valid and exportable
@@ -189,6 +195,8 @@ public class KeycardApplet extends Applet {
 
     uid = new byte[UID_LENGTH];
     crypto.random.generateData(uid, (short) 0, UID_LENGTH);
+    
+    savedData = new byte[SAVED_DATA_SIZE];
 
     masterSeed = new byte[BIP39_SEED_SIZE];
     masterSeedStatus = MASTERSEED_EMPTY;
@@ -287,6 +295,12 @@ public class KeycardApplet extends Applet {
           break;
         case INS_UNBLOCK_PIN:
           unblockPIN(apdu);
+          break;
+        case INS_LOAD_DATA:
+          loadData(apdu);
+          break;
+        case INS_EXPORT_DATA:
+          exportData(apdu);
           break;
         case INS_LOAD_KEY:
           loadKey(apdu);
@@ -720,7 +734,7 @@ public class KeycardApplet extends Applet {
     pinlessPathLen = 0;
     generateKeyUIDAndRespond(apdu, apduBuffer);
   }
-
+ 
   /**
    * Generates the Key UID from the current master public key and responds to the command.
    *
@@ -846,6 +860,49 @@ public class KeycardApplet extends Applet {
 
     resetKeyStatus();
     JCSystem.commitTransaction();
+  }
+  
+  // Load up to 155 bytes of data into a buffer. This will generally be used for Shamir secrets or
+  // Bitcoin multisig scripts. The buffer (`savedData`) does not interact with anything in the applet.
+  // [PIN protected APDU]
+  private void loadData(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+    secureChannel.preprocessAPDU(apduBuffer);
+
+    if (!pin.isValidated()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+    
+    if (apduBuffer[ISO7816.OFFSET_LC] > SAVED_DATA_SIZE) {
+      ISOException.throwIt(ISO7816.SW_WRONG_DATA);
+    }
+    
+    JCSystem.beginTransaction();
+    Util.arrayCopy(apduBuffer, (short) ISO7816.OFFSET_CDATA, savedData, (short) 0, apduBuffer[ISO7816.OFFSET_LC]);
+    JCSystem.commitTransaction();
+    
+    secureChannel.respond(apdu, (short) 0, ISO7816.SW_NO_ERROR);
+  }
+  
+  // Export the entirety of the `savedData` buffer (155 bytes).
+  // [PIN protected APDU]
+  private void exportData(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+    secureChannel.preprocessAPDU(apduBuffer);
+
+    if (!pin.isValidated()) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
+    }
+
+    short off = SecureChannel.SC_OUT_OFFSET;
+    apduBuffer[off++] = TLV_DATA;
+    apduBuffer[off++] = (byte) SAVED_DATA_SIZE;
+    
+    JCSystem.beginTransaction();
+    Util.arrayCopy(savedData, (short) 0, apduBuffer, off++, SAVED_DATA_SIZE);
+    JCSystem.commitTransaction();
+
+    secureChannel.respond(apdu, (short) (2 + SAVED_DATA_SIZE), ISO7816.SW_NO_ERROR);
   }
 
   /**
