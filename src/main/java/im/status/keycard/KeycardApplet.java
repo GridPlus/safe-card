@@ -264,6 +264,9 @@ public class KeycardApplet extends Applet {
     apdu.setIncomingAndReceive();
     try {
       switch (apduBuffer[ISO7816.OFFSET_INS]) {
+        case SecureChannel.INS_GET_DAGNOSTIC_OUTPUT:
+          secureChannel.getDiagnosticOutput(apdu);
+          break;
         case SecureChannel.INS_IDENTIFY_CARD:
           secureChannel.identifyCard(apdu);
           break;

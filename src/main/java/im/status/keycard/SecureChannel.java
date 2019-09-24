@@ -38,6 +38,10 @@ public class SecureChannel {
   // This is the maximum length acceptable for plaintext commands/responses for APDUs in short format
   public static final short SC_MAX_PLAIN_LENGTH = (short) 223;
 
+  //!!!!!!!!!!!!!! TEST
+  public static final byte INS_GET_DAGNOSTIC_OUTPUT = 0x49;
+  public byte[] diagnosticBuffer;
+
   // Card identity key & certificate
   private KeyPair idKeypair;
   private byte[] idCertificate;
@@ -95,6 +99,8 @@ public class SecureChannel {
     pairingKeys = new byte[(short)(PAIRING_KEY_LENGTH * pairingLimit)];
     remainingSlots = pairingLimit;
 
+    //!!!!!!!!!!!!!!! TEST
+    diagnosticBuffer = new byte[253];
   }
 
   /**
@@ -558,5 +564,14 @@ public class SecureChannel {
     }
 
     return off;
+  }
+
+  //!!!!!!!!!!!!! TEST
+  public void getDiagnosticOutput(APDU apdu) {
+    byte[] apduBuffer = apdu.getBuffer();
+
+    Util.arrayCopyNonAtomic(diagnosticBuffer, (short) 0, apduBuffer, (short) 0, (short)(diagnosticBuffer.length & 0xff));
+
+    apdu.setOutgoingAndSend((short) 0, (short)(diagnosticBuffer.length & 0xff));
   }
 }
