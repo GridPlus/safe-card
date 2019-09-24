@@ -1477,10 +1477,6 @@ public class KeycardApplet extends Applet {
         return;
     }
 
-    byte[] exportPath = keyPath;
-    short exportPathOff = (short) 0;
-    short exportPathLen = keyPathLen;
-
     boolean derive = false;
     boolean makeCurrent = false;
     byte derivationSource = (byte) (apduBuffer[ISO7816.OFFSET_P1] & DERIVE_P1_SOURCE_MASK);
@@ -1492,11 +1488,6 @@ public class KeycardApplet extends Applet {
         makeCurrent = true;
       case EXPORT_KEY_P1_DERIVE:
         derive = true;
-        if (derivationSource == DERIVE_P1_SOURCE_MASTER) {
-          exportPath = apduBuffer;
-          exportPathOff = ISO7816.OFFSET_CDATA;
-          exportPathLen = dataLen;
-        }
         break;
       default:
         ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
@@ -1508,25 +1499,17 @@ public class KeycardApplet extends Applet {
     }
 
     short off = SecureChannel.SC_OUT_OFFSET;
-
-    apduBuffer[off++] = TLV_KEY_TEMPLATE;
-    off++;
-
     short len;
 
+    apduBuffer[off++] = TLV_PUB_KEY;
+    off++;
     if (!derive || makeCurrent) {
-      apduBuffer[off++] = TLV_PUB_KEY;
-      off++;
       len = publicKey.getW(apduBuffer, off);
-      apduBuffer[(short) (off - 1)] = (byte) len;
-      off += len;
     } else {
-      apduBuffer[off++] = TLV_PUB_KEY;
-      off++;
       len = secp256k1.derivePublicKey(derivationOutput, (short) 0, apduBuffer, off);
-      apduBuffer[(short) (off - 1)] = (byte) len;
-      off += len;
     }
+    apduBuffer[(short) (off - 1)] = (byte) len;
+    off += len;
     
     if (withChaincode) {
       apduBuffer[off++] = TLV_CHAIN_CODE;
@@ -1537,10 +1520,7 @@ public class KeycardApplet extends Applet {
       off += len;
     }
 
-    len = (short) (off - SecureChannel.SC_OUT_OFFSET);
-    apduBuffer[(SecureChannel.SC_OUT_OFFSET + 1)] = (byte) (len - 2);
-
-    secureChannel.respond(apdu, len, ISO7816.SW_NO_ERROR);
+    secureChannel.respond(apdu, off, ISO7816.SW_NO_ERROR);
   }
 
   /**
