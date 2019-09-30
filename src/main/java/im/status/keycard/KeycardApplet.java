@@ -38,7 +38,8 @@ public class KeycardApplet extends Applet {
   static final byte KEY_PATH_MAX_DEPTH = 10;
   static final byte PAIRING_MAX_CLIENT_COUNT = 1;
   static final byte UID_LENGTH = 16;
-  static final byte SAVED_DATA_SIZE = 255 - SecureChannel.SC_OUT_OFFSET; // Max APDU size less the SC overhead
+  // Maximum payload size of an encrypted APDU: https://status.im/keycard_api/apdu/opensecurechannel.html
+  static final short SAVED_DATA_SIZE = 223;
 
   static final short CHAIN_CODE_SIZE = 32;
   static final short KEY_UID_LENGTH = 32;
@@ -873,7 +874,7 @@ public class KeycardApplet extends Applet {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
     
-    if (apduBuffer[ISO7816.OFFSET_LC] > SAVED_DATA_SIZE) {
+    if ((short) apduBuffer[ISO7816.OFFSET_LC] != SAVED_DATA_SIZE) {
       ISOException.throwIt(ISO7816.SW_WRONG_DATA);
     }
     
@@ -893,16 +894,12 @@ public class KeycardApplet extends Applet {
     if (!pin.isValidated()) {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
-
-    short off = SecureChannel.SC_OUT_OFFSET;
-    apduBuffer[off++] = TLV_DATA;
-    apduBuffer[off++] = (byte) SAVED_DATA_SIZE;
     
     JCSystem.beginTransaction();
-    Util.arrayCopy(savedData, (short) 0, apduBuffer, off++, SAVED_DATA_SIZE);
+    Util.arrayCopy(savedData, (short) 0, apduBuffer, (short) 0, SAVED_DATA_SIZE);
     JCSystem.commitTransaction();
 
-    secureChannel.respond(apdu, (short) (2 + SAVED_DATA_SIZE), ISO7816.SW_NO_ERROR);
+    secureChannel.respond(apdu, SAVED_DATA_SIZE, ISO7816.SW_NO_ERROR);
   }
 
   /**
