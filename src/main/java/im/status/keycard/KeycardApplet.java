@@ -38,7 +38,7 @@ public class KeycardApplet extends Applet {
   static final byte KEY_PATH_MAX_DEPTH = 10;
   static final byte PAIRING_MAX_CLIENT_COUNT = 1;
   static final byte UID_LENGTH = 16;
-  static final byte SAVED_DATA_SIZE = 155; // 5x compressed public key
+  static final byte SAVED_DATA_SIZE = 255 - SecureChannel.SC_OUT_OFFSET; // Max APDU size less the SC overhead
 
   static final short CHAIN_CODE_SIZE = 32;
   static final short KEY_UID_LENGTH = 32;
