@@ -1215,6 +1215,7 @@ public class KeycardApplet extends Applet {
     }
 
     // Generate random seed
+    apduBuffer[ISO7816.OFFSET_LC] = BIP39_SEED_SIZE;
     crypto.random.generateData(apduBuffer, ISO7816.OFFSET_CDATA, BIP39_SEED_SIZE);
 
     // Load the generated seed
