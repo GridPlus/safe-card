@@ -742,10 +742,20 @@ public class KeycardApplet extends Applet {
    * @param apdu the JCRE-owned APDU object.
    * @param apduBuffer the APDU buffer
    */
+  private void generateKeyUID(byte[] buffer, short offset) {
+    short pubLen = masterPublic.getW(buffer, offset);
+    crypto.sha256.doFinal(buffer, offset, pubLen, keyUID, (short) 0);
+    Util.arrayCopyNonAtomic(keyUID, (short) 0, buffer, offset, KEY_UID_LENGTH);
+  }
+
+  /**
+   * Generates the Key UID from the current master public key and responds to the command.
+   *
+   * @param apdu the JCRE-owned APDU object.
+   * @param apduBuffer the APDU buffer
+   */
   private void generateKeyUIDAndRespond(APDU apdu, byte[] apduBuffer) {
-    short pubLen = masterPublic.getW(apduBuffer, (short) 0);
-    crypto.sha256.doFinal(apduBuffer, (short) 0, pubLen, keyUID, (short) 0);
-    Util.arrayCopyNonAtomic(keyUID, (short) 0, apduBuffer, SecureChannel.SC_OUT_OFFSET, KEY_UID_LENGTH);
+    generateKeyUID(apduBuffer, SecureChannel.SC_OUT_OFFSET);
     secureChannel.respond(apdu, KEY_UID_LENGTH, ISO7816.SW_NO_ERROR);
   }
 
@@ -1225,13 +1235,27 @@ public class KeycardApplet extends Applet {
     // Save seed exportability (this also indicates the seed as valid)
     masterSeedStatus = exportability; // Only save seed exportability after seed successfully loaded
 
+    JCSystem.beginTransaction();
+
+    // Build response [KeyUID, (optional) Seed]
+    short off = SecureChannel.SC_OUT_OFFSET;
+    apduBuffer[off++] = TLV_KEY_UID;
+    apduBuffer[off++] = KEY_UID_LENGTH;
+    generateKeyUID(apduBuffer, off);
+    off += KEY_UID_LENGTH;
+
     // Only return the seed if export is allowed on creation
     if( apduBuffer[ISO7816.OFFSET_P1] == GENERATE_KEY_P1_EXPORTABLE_ONCE ||
         apduBuffer[ISO7816.OFFSET_P1] == GENERATE_KEY_P1_EXPORTABLE_ALWAYS ) {
-      secureChannel.respond(apdu, BIP39_SEED_SIZE, ISO7816.SW_NO_ERROR);
-    } else {
-      secureChannel.respond(apdu, (short) 0, ISO7816.SW_NO_ERROR);
+        apduBuffer[off++] = TLV_SEED;
+        apduBuffer[off++] = BIP39_SEED_SIZE;
+        Util.arrayCopy(masterSeed, (short) 0, apduBuffer, off, BIP39_SEED_SIZE);
+        off += BIP39_SEED_SIZE;
     }
+    
+    JCSystem.commitTransaction();
+
+    secureChannel.respond(apdu, (short) (off - SecureChannel.SC_OUT_OFFSET), ISO7816.SW_NO_ERROR);
   }
 
   /**
