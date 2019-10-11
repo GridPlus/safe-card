@@ -1211,13 +1211,19 @@ public class KeycardApplet extends Applet {
 
     // Sanitize P1 input
     byte exportability = (byte) MASTERSEED_EMPTY;
+    boolean exportSeed = false;
     switch(apduBuffer[ISO7816.OFFSET_P1]) {
       case (byte) GENERATE_KEY_P1_EXPORTABLE_NEVER:
+        exportability = (byte) MASTERSEED_NOT_EXPORTABLE;
+        exportSeed = false;
+        break;
       case (byte) GENERATE_KEY_P1_EXPORTABLE_ONCE:
         exportability = (byte) MASTERSEED_NOT_EXPORTABLE;
+        exportSeed = true;
         break;
       case (byte) GENERATE_KEY_P1_EXPORTABLE_ALWAYS:
         exportability = (byte) MASTERSEED_EXPORTABLE;
+        exportSeed = true;
         break;
       default:
         ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
@@ -1245,14 +1251,13 @@ public class KeycardApplet extends Applet {
     off += KEY_UID_LENGTH;
 
     // Only return the seed if export is allowed on creation
-    if( apduBuffer[ISO7816.OFFSET_P1] == GENERATE_KEY_P1_EXPORTABLE_ONCE ||
-        apduBuffer[ISO7816.OFFSET_P1] == GENERATE_KEY_P1_EXPORTABLE_ALWAYS ) {
+    if(exportSeed) {
         apduBuffer[off++] = TLV_SEED;
         apduBuffer[off++] = BIP39_SEED_SIZE;
         Util.arrayCopy(masterSeed, (short) 0, apduBuffer, off, BIP39_SEED_SIZE);
         off += BIP39_SEED_SIZE;
     }
-    
+
     JCSystem.commitTransaction();
 
     secureChannel.respond(apdu, (short) (off - SecureChannel.SC_OUT_OFFSET), ISO7816.SW_NO_ERROR);
