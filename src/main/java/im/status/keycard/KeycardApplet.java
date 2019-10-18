@@ -86,9 +86,8 @@ public class KeycardApplet extends Applet {
   static final byte EXPORT_KEY_P1_DERIVE = 0x01;
   static final byte EXPORT_KEY_P1_DERIVE_AND_MAKE_CURRENT = 0x02;
 
-  // static final byte EXPORT_KEY_P2_PRIVATE_AND_PUBLIC = 0x00; // Unsupported
+  static final byte EXPORT_KEY_P2_PRIVATE_AND_PUBLIC = 0x00;
   static final byte EXPORT_KEY_P2_PUBLIC_ONLY = 0x01;
-  static final byte EXPORT_KEY_P2_PUBLIC_AND_CHAINCODE = 0x02;
 
   static final byte TLV_SIGNATURE_TEMPLATE = (byte) 0xA0;
 
@@ -1548,18 +1547,23 @@ public class KeycardApplet extends Applet {
       ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
 
-    boolean withChaincode;
+    boolean publicOnly;
+
     switch (apduBuffer[ISO7816.OFFSET_P2]) {
-      case EXPORT_KEY_P2_PUBLIC_ONLY:
-        withChaincode = false;
+      case EXPORT_KEY_P2_PRIVATE_AND_PUBLIC:
+        publicOnly = false;
         break;
-      case EXPORT_KEY_P2_PUBLIC_AND_CHAINCODE:
-        withChaincode = true;
+      case EXPORT_KEY_P2_PUBLIC_ONLY:
+        publicOnly = true;
         break;
       default:
         ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
         return;
     }
+
+    byte[] exportPath = keyPath;
+    short exportPathOff = (short) 0;
+    short exportPathLen = keyPathLen;
 
     boolean derive = false;
     boolean makeCurrent = false;
@@ -1572,10 +1576,19 @@ public class KeycardApplet extends Applet {
         makeCurrent = true;
       case EXPORT_KEY_P1_DERIVE:
         derive = true;
+        if (derivationSource == DERIVE_P1_SOURCE_MASTER) {
+          exportPath = apduBuffer;
+          exportPathOff = ISO7816.OFFSET_CDATA;
+          exportPathLen = dataLen;
+        }
         break;
       default:
         ISOException.throwIt(ISO7816.SW_INCORRECT_P1P2);
         return;
+    }
+
+    if (!publicOnly && ((exportPathLen < (short)(((short) EIP_1581_PREFIX.length) + 8)) || (Util.arrayCompare(EIP_1581_PREFIX, (short) 0, exportPath, exportPathOff, (short) EIP_1581_PREFIX.length) != 0))) {
+      ISOException.throwIt(ISO7816.SW_CONDITIONS_NOT_SATISFIED);
     }
 
     if (derive) {
@@ -1583,28 +1596,45 @@ public class KeycardApplet extends Applet {
     }
 
     short off = SecureChannel.SC_OUT_OFFSET;
+
+    apduBuffer[off++] = TLV_KEY_TEMPLATE;
+    off++;
+
     short len;
 
-    apduBuffer[off++] = TLV_PUB_KEY;
-    off++;
     if (!derive || makeCurrent) {
-      len = publicKey.getW(apduBuffer, off);
-    } else {
-      len = secp256k1.derivePublicKey(derivationOutput, (short) 0, apduBuffer, off);
-    }
-    apduBuffer[(short) (off - 1)] = (byte) len;
-    off += len;
-    
-    if (withChaincode) {
-      apduBuffer[off++] = TLV_CHAIN_CODE;
+      apduBuffer[off++] = TLV_PUB_KEY;
       off++;
-      Util.arrayCopyNonAtomic(chainCode, (short) 0, apduBuffer, off, CHAIN_CODE_SIZE);
-      len = CHAIN_CODE_SIZE;
+      len = publicKey.getW(apduBuffer, off);
+      apduBuffer[(short) (off - 1)] = (byte) len;
+      off += len;
+    } else if (publicOnly) {
+      apduBuffer[off++] = TLV_PUB_KEY;
+      off++;
+      len = secp256k1.derivePublicKey(derivationOutput, (short) 0, apduBuffer, off);
       apduBuffer[(short) (off - 1)] = (byte) len;
       off += len;
     }
 
-    secureChannel.respond(apdu, off, ISO7816.SW_NO_ERROR);
+    if (!publicOnly) {
+      apduBuffer[off++] = TLV_PRIV_KEY;
+      off++;
+
+      if (!derive || makeCurrent) {
+        len = privateKey.getS(apduBuffer, off);
+      } else {
+        Util.arrayCopyNonAtomic(derivationOutput, (short) 0, apduBuffer, off, Crypto.KEY_SECRET_SIZE);
+        len = Crypto.KEY_SECRET_SIZE;
+      }
+
+      apduBuffer[(short) (off - 1)] = (byte) len;
+      off += len;
+    }
+
+    len = (short) (off - SecureChannel.SC_OUT_OFFSET);
+    apduBuffer[(SecureChannel.SC_OUT_OFFSET + 1)] = (byte) (len - 2);
+
+    secureChannel.respond(apdu, len, ISO7816.SW_NO_ERROR);
   }
 
   /**
